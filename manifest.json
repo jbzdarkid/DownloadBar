@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "DownloadBar",
+  "version": "0.1.0",
+  "description": "Brings back the download bar across the bottom of every page, like Chrome used to have.",
+  "permissions": [
+    "downloads",
+    "downloads.open",
+    "storage"
+  ],
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": [
+        "src/styles.js",
+        "src/dom.js",
+        "src/format.js",
+        "src/menu.js",
+        "src/ui.js",
+        "src/content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

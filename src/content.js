@@ -1,4 +1,4 @@
-// DownloadBar — content script.
+// DownloadBar -- content script.
 // Injects a fixed-position bar into the page using a closed Shadow DOM so
 // page CSS cannot affect it (and vice versa). Subscribes to the SW via a
 // long-lived port; renders state, never polls.
@@ -11,14 +11,8 @@
   let host = null;
   let shadow = null;
 
-  const actions = DownloadBar.makeActions({
-    dismissAll() {
-      // Hide immediately so ✕ feels instant; the SW broadcast will follow
-      // with items=[] and keep the host hidden. Without this the click can
-      // feel broken while the SW wakes up.
-      setVisible(false);
-    },
-  });
+  // Renderer calls actions(name, id) to send a message to the SW.
+  const actions = (action, id) => chrome.runtime.sendMessage({ action, id });
 
   function ensureHost() {
     if (host) return;
@@ -31,7 +25,7 @@
       'z-index: 2147483647 !important;' +
       'pointer-events: auto !important;';
     shadow = host.attachShadow({ mode: 'closed' });
-    DownloadBar.mount(shadow, actions, { layout: 'bar' });
+    DownloadBar.mount(shadow, actions);
     (document.body || document.documentElement).appendChild(host);
   }
 
@@ -56,17 +50,17 @@
       DownloadBar.render(shadow, msg.state);
     });
     port.onDisconnect.addListener(() => {
-      // SW recycled or extension reloaded — reconnect on next interaction.
+      // SW recycled or extension reloaded -- reconnect on next interaction.
       port = null;
       const reconnect = () => {
         window.removeEventListener('focus', reconnect);
         document.removeEventListener('visibilitychange', reconnect);
-        try { connect(); } catch { /* ignore */ }
+        connect();
       };
       window.addEventListener('focus', reconnect, { once: true });
       document.addEventListener('visibilitychange', reconnect, { once: true });
     });
   }
 
-  try { connect(); } catch { /* ignore */ }
+  connect();
 })();
