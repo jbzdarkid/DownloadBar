@@ -1,0 +1,11 @@
+# Bundled Chromium binary (downloaded by setup per tests/README.md, not source-controlled)
+chrome-win64/
+
+# Python venvs
+.venv/
+tests/.venv/
+
+# Test artifacts
+tests/run.log
+tests/frames/
+tests/.scratch/

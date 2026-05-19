@@ -16,7 +16,6 @@
   let _chipList = null;
   let _sendAction = null;
   const _seenDownloadIds = new Set();
-  const _flashed = new Set();
   const _flashStartedAt = new Map();
 
   // Split a filename so the extension stays visible while CSS ellipsizes only the basename.
@@ -86,7 +85,6 @@
       // Reset transition tracking when the bar empties, so a later
       // download that reuses an old ID doesn't suppress its flash.
       _seenDownloadIds.clear();
-      _flashed.clear();
       _flashStartedAt.clear();
       return;
     }
@@ -98,15 +96,15 @@
       const isComplete = item.state === 'complete' && item.exists !== false;
 
       // Completion flash. Coordinated via two layers:
-      //   1. flashed: in-memory dedup for this mount lifetime.
+      //   1. _flashStartedAt: in-memory dedup for this mount lifetime; also feeds the negative
+      //      animation-delay trick so re-renders mid-pulse don't restart the animation.
       //   2. state.flashedIds: SW-tracked set persisted in session storage, so the flash doesn't re-fire
       //      in another tab or after SW restart. The renderer acks every new flash via
       //      dispatch('markFlashed', id).
       const currState = progressState(item);
       const isNewChip = !_seenDownloadIds.has(item.id);
       const swFlashed = state.flashedIds && state.flashedIds.includes(item.id);
-      if (isComplete && !_flashed.has(item.id) && !swFlashed) {
-        _flashed.add(item.id);
+      if (isComplete && !_flashStartedAt.has(item.id) && !swFlashed) {
         _flashStartedAt.set(item.id, Date.now());
         _sendAction('markFlashed', item.id);
       }
@@ -213,7 +211,6 @@
     // Commit next state and prune flashed IDs that are no longer present.
     _seenDownloadIds.clear();
     for (const id of nextSeen) _seenDownloadIds.add(id);
-    for (const id of [..._flashed]) if (!liveIds.has(id)) _flashed.delete(id);
     for (const id of [..._flashStartedAt.keys()]) if (!liveIds.has(id)) _flashStartedAt.delete(id);
   }
 
