@@ -2,6 +2,8 @@
 // Tracks which download IDs are visible in the bar, persists the set in session storage,
 // and pushes state to connected tabs via long-lived ports.
 
+importScripts('./settings.js');
+
 const VISIBLE_KEY = 'visibleIds';
 const FLASHED_KEY = 'flashedIds';
 // Session-scoped: ids the user toggled "Notify when done" on, awaiting completion.
@@ -14,9 +16,12 @@ const ICON_SIZE = 32; // chrome.downloads.getFileIcon supports 16 or 32.
 
 // Authoritative in-memory copies of the persisted Sets. Storage is RAM-backed for session keys
 // (chrome.storage.session is cleared when the browser closes), persistent for chrome.storage.local.
-// We hydrate once on first access and treat memory as the source of truth thereafter; setX still writes
-// through so other SW invocations after a restart can rehydrate.
+// We hydrate once on first access and treat memory as the source of truth thereafter;
+// setX still writes through so other SW invocations after a restart can rehydrate.
 function persistedSet(key, persist = false) {
+  if (!SW_CACHED_STORAGE_KEYS.has(key)) {
+    throw new Error(`[DownloadBar] ${key} was not declared in SW_CACHED_STORAGE_KEYS in settings.js.`);
+  }
   const storage = persist ? chrome.storage.local : chrome.storage.session;
   let cache = null;
   return [
@@ -36,13 +41,17 @@ const [getFlashed, setFlashed] = persistedSet(FLASHED_KEY);
 const [getNotifyOnDone, setNotifyOnDone] = persistedSet(NOTIFY_ON_DONE_KEY);
 const [getAlwaysNotifyExts, setAlwaysNotifyExts] = persistedSet(ALWAYS_NOTIFY_EXTS_KEY, /*persist=*/true);
 
-// Lowercased extension without leading dot, or '' if the basename has none.
-// Mirrors how Chrome 113 keys the native "Always open files of this type" preference.
+// Lowercased extension for download-type matching. Prefers known compounds (.tar.gz over
+// just .gz) so users can opt into notifications on the type they actually care about.
 function getExt(basename) {
   if (!basename) return '';
-  const i = basename.lastIndexOf('.');
-  if (i <= 0 || i === basename.length - 1) return '';
-  return basename.slice(i + 1).toLowerCase();
+  const lower = basename.toLowerCase();
+  for (const compound of COMPOUND_EXTS) {
+    if (lower.endsWith('.' + compound)) return compound;
+  }
+  const i = lower.lastIndexOf('.');
+  if (i <= 0 || i === lower.length - 1) return '';
+  return lower.slice(i + 1);
 }
 
 const _ports = new Set();
@@ -244,7 +253,20 @@ const handlers = {
     broadcast();
   },
 
-  open:       ({ id }) => chrome.downloads.open(id),
+  // Open the file. If the dismissOnOpen setting is on (the default), also drop the chip from the
+  // visibility set so the bar matches the user's mental model of "I'm done with this one." When
+  // off, the chip stays put, matching classic Chrome behavior.
+  open: async ({ id }) => {
+    await chrome.downloads.open(id);
+    const { dismissOnOpen } = await getSettings();
+    if (dismissOnOpen) {
+      const visible = await getVisible();
+      if (visible.delete(id)) {
+        await setVisible(visible);
+        broadcast();
+      }
+    }
+  },
   show:       ({ id }) => chrome.downloads.show(id),
   pause:      ({ id }) => chrome.downloads.pause(id),
   resume:     ({ id }) => chrome.downloads.resume(id),
@@ -282,6 +304,7 @@ const handlers = {
   // the currently-in-progress chip if the toggle was flipped while it's still transferring --
   // maybeDrawAttention() consults the live set at completion time.
   setAlwaysNotifyExt: async ({ ext, enabled }) => {
+    ext = normalizeExt(ext);
     if (!ext) return;
     const alwaysNotifyExts = await getAlwaysNotifyExts();
     const isOn = alwaysNotifyExts.has(ext);
@@ -291,6 +314,10 @@ const handlers = {
     await setAlwaysNotifyExts(alwaysNotifyExts);
     broadcast();
   },
+
+  // Read-only view of the always-notify set, for the options page.
+  // Marshalled into an array to cross the SW boundary.
+  getAlwaysNotifyExts: async () => [...await getAlwaysNotifyExts()],
 };
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {

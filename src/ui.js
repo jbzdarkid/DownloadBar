@@ -9,7 +9,7 @@
   if (window.DownloadBar) return;
   const NS = window.__DB || {};
   const { el } = NS.dom;
-  const { strokeIconSvg, progressRingSvg } = NS.svg;
+  const { progressRingSvg, closeIconSvg, caretIconSvg } = NS.svg;
   const { statusText, progressState, progressPct } = NS.format;
   const { closeAnyMenu, buildMenu } = NS.menu;
 

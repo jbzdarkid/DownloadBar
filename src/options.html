@@ -1,0 +1,95 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>DownloadBar options</title>
+  <style>
+    /* Fixed width on the body kills the embedded-options resize loop where a transient
+       scrollbar would steal width and re-trigger itself. */
+    :root {
+      color-scheme: light dark;
+      --border: light-dark(#e0e0e2, #3c4043);
+      --muted:  light-dark(#5f6368, #9aa0a6);
+    }
+    html { overflow: hidden; }
+    body {
+      margin: 0;
+      width: 480px;
+      padding: 20px 24px 24px;
+      box-sizing: border-box;
+      background: light-dark(#ffffff, #202124);
+      color: light-dark(#202124, #e8eaed);
+      font: 13px/1.5 "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+    }
+
+    h1 { font-size: 18px; font-weight: 500; margin: 0 0 16px; }
+    h2 { font-size: 13px; font-weight: 500; margin: 0 0 4px; }
+    p  { margin: 0 0 12px; color: var(--muted); }
+
+    .setting {
+      display: flex;
+      gap: 12px;
+      padding: 12px 0;
+      border-top: 1px solid var(--border);
+    }
+    .setting input[type=checkbox] { margin-top: 2px; flex: 0 0 auto; }
+    .setting label { flex: 1; cursor: pointer; }
+    .title { font-weight: 500; }
+    .desc  { display: block; color: var(--muted); margin-top: 2px; }
+
+    section { margin-top: 8px; padding-top: 16px; border-top: 1px solid var(--border); }
+
+    .ext-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 12px;
+      min-height: 28px;
+    }
+    .ext-empty { color: #80868b; line-height: 28px; }
+    .ext-chip {
+      display: inline-flex;
+      align-items: center;
+      height: 26px;
+      padding: 0 10px;
+      border: 0;
+      border-radius: 13px;
+      background: light-dark(#e8f0fe, #1f3a5f);
+      color: light-dark(#174ea6, #aecbfa);
+      font: inherit;
+      cursor: pointer;
+    }
+    .ext-chip:hover { background: light-dark(#d2e3fc, #2d4f7f); text-decoration: line-through; }
+
+    .ext-add-row { display: flex; gap: 8px; }
+    .ext-input, .ext-add {
+      height: 28px;
+      border: 1px solid light-dark(#c4c7c5, #5f6368);
+      border-radius: 4px;
+      color: inherit;
+      font: inherit;
+      box-sizing: border-box;
+    }
+    .ext-input {
+      flex: 0 0 160px;
+      padding: 0 8px;
+      background: light-dark(#ffffff, #292a2d);
+    }
+    .ext-input:focus { outline: 2px solid light-dark(#1a73e8, #8ab4f8); outline-offset: -1px; }
+    .ext-add {
+      padding: 0 14px;
+      background: light-dark(#f8f9fa, #303134);
+      cursor: pointer;
+    }
+    .ext-add:hover { background: light-dark(#e8eaed, #3c4043); }
+  </style>
+</head>
+<body>
+  <h1>DownloadBar options</h1>
+  <div id="root"></div>
+
+  <script src="dom.js"></script>
+  <script src="settings.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

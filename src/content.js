@@ -41,7 +41,14 @@
 
   // Long-lived port: SW pushes state on connect and on every change.
   function connect() {
-    _port = chrome.runtime.connect({ name: 'downloadbar' });
+    try {
+      _port = chrome.runtime.connect({ name: 'downloadbar' });
+    } catch {
+      // The extension was reloaded, shut down until the next page navigation.
+      _port = null;
+      setVisible(false);
+      return;
+    }
     _port.onMessage.addListener((state) => {
       if (!state.items.length) {
         setVisible(false);
@@ -53,6 +60,7 @@
     });
     _port.onDisconnect.addListener(() => {
       // SW recycled or extension reloaded -- reconnect on next interaction.
+      void chrome.runtime.lastError;
       _port = null;
       const reconnect = () => {
         window.removeEventListener('focus', reconnect);

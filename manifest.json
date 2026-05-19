@@ -11,12 +11,17 @@
   "background": {
     "service_worker": "src/background.js"
   },
+  "options_ui": {
+    "page": "src/options.html",
+    "open_in_tab": false
+  },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
       "js": [
         "src/styles.js",
         "src/dom.js",
+        "src/svg.js",
         "src/format.js",
         "src/menu.js",
         "src/ui.js",
