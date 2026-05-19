@@ -12,8 +12,14 @@
   const { statusText, progressState, progressPct } = NS.format;
   const { closeAnyMenu, buildMenu } = NS.menu;
 
-  // Split a filename so the extension stays visible while CSS ellipsizes
-  // only the basename. "Firefox News - Foo.html" -> ["Firefox News - Foo", ".html"]
+  let _chipList = null;
+  let _sendAction = null;
+  const _seenDownloadIds = new Set();
+  const _flashed = new Set();
+  const _flashStartedAt = new Map();
+
+  // Split a filename so the extension stays visible while CSS ellipsizes only the basename.
+  // "Firefox News - Foo.html" -> ["Firefox News - Foo", ".html"]
   function splitExt(name) {
     if (!name) return ['', ''];
     const i = name.lastIndexOf('.');
@@ -21,14 +27,30 @@
     return [name.slice(0, i), name.slice(i)];
   }
 
-  // SVG progress ring drawn around the file-type icon while a download is
-  // active, and again (as a full-circle pulse) during the completion flash.
-  // Matches the geometry of Chrome 113's PaintDownloadProgress: 1.7 px
-  // stroke, start at 12 o'clock, sweep clockwise. Indeterminate mode draws
-  // a fixed 50-degree arc; CSS rotates the whole SVG to animate it.
-  function progressRingSvg(percent, indeterminate) {
+  // Build an SVG element mirroring a Chromium vector_icon: a single stroked path on a square canvas,
+  // with stroke color bound to currentColor so CSS controls tint. Used for the close X and the chip caret.
+  function strokeIconSvg({ size = 16, d, strokeWidth, join = 'miter' }) {
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', `0 0 ${size} ${size}`);
+    const path = document.createElementNS(ns, 'path');
+    path.setAttribute('d', d);
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', 'currentColor');
+    path.setAttribute('stroke-width', String(strokeWidth));
+    path.setAttribute('stroke-linecap', 'round');
+    if (join === 'round') path.setAttribute('stroke-linejoin', 'round');
+    svg.appendChild(path);
+    return svg;
+  }
+
+  // Draw download progress as an SVG ring around the icon while downloading, then the full ring flashes on completion.
+  // Matches the geometry of Chrome 113's PaintDownloadProgress: 1.7 px stroke, start at 12 o'clock, sweep clockwise.
+  // Pass percent=null for indeterminate mode, which draws a fixed 50-degree arc and uses CSS to animate SVG rotation.
+  function progressRingSvg(percent) {
+    const indeterminate = percent == null;
     const svgNs = 'http://www.w3.org/2000/svg';
-    const r = 10.15;                 // circumference ~63.77 inside a 24x24 box
+    const r = 10.15;
     const c = 2 * Math.PI * r;
     const fgLen = indeterminate ? (c * 50 / 360) : (c * Math.max(0, Math.min(100, percent)) / 100);
     const svg = document.createElementNS(svgNs, 'svg');
@@ -36,15 +58,17 @@
     svg.setAttribute('viewBox', '0 0 24 24');
     if (!indeterminate) {
       const bg = document.createElementNS(svgNs, 'circle');
-      bg.setAttribute('class', 'db-progress-ring-bg');
-      bg.setAttribute('cx', '12'); bg.setAttribute('cy', '12');
+      bg.setAttribute('class', 'db-progress-ring__bg');
+      bg.setAttribute('cx', '12');
+      bg.setAttribute('cy', '12');
       bg.setAttribute('r', String(r));
       bg.setAttribute('stroke-width', '1.7');
       svg.appendChild(bg);
     }
     const fg = document.createElementNS(svgNs, 'circle');
-    fg.setAttribute('class', 'db-progress-ring-fg');
-    fg.setAttribute('cx', '12'); fg.setAttribute('cy', '12');
+    fg.setAttribute('class', 'db-progress-ring__fg');
+    fg.setAttribute('cx', '12');
+    fg.setAttribute('cy', '12');
     fg.setAttribute('r', String(r));
     fg.setAttribute('stroke-width', '1.7');
     fg.setAttribute('stroke-linecap', 'butt');
@@ -55,47 +79,42 @@
     return svg;
   }
 
-  // Chrome 113 keeps up to kMaxDownloadViews = 15 download_item_views in
-  // memory (download_shelf_view.cc). The shelf then hides any chip whose
-  // right edge would overlap the trailing cluster. We mirror that: render
-  // up to 15 chips, and rely on flex/clip-path to clip overflow.
-  const BAR_CHIP_LIMIT = 15;
-  const FLASH_MS = 2500;
-
   function mount(root, actions) {
-    const styleEl = document.createElement('style');
-    styleEl.textContent = NS.STYLES;
-    root.appendChild(styleEl);
+    // Inline <style> rather than a separate .css file. See styles.js for more details.
+    root.appendChild(el('style', null, NS.STYLES));
 
-    const container = el('div', { class: 'db-bar' });
-    const items = el('div', { class: 'db-items' });
+    _chipList = el('div', { class: 'db-items' });
+    root.appendChild(el('div',
+      {
+        class: 'db-bar',
+        onclick: () => closeAnyMenu(root) // Close any open menu when clicking elsewhere in the bar.
+      },
+      _chipList,
+      el('div', { class: 'db-tail' },
+        el('button', {
+          class: 'db-show-all', title: 'Show all downloads',
+          onclick: () => actions('openDownloadsPage')
+        }, 'Show all'),
+        el('button', {
+          class: 'db-close', title: 'Close',
+          // stopPropagation prevents the container click handler from firing and closing any open chip menus.
+          onclick: (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            actions('dismissAll');
+          }
+        },
+          // Mirrors Chromium 113's vector_icons::kCloseRoundedIcon (16dp rep):
+          // Two rounded-cap strokes from (4,4)->(12,12) and (4,12)->(12,4) at stroke-width 1.85 on a 16x16 canvas.
+          strokeIconSvg({ d: 'M4 4 L12 12 M4 12 L12 4', strokeWidth: 1.85 })
+        )
+      )
+    ));
 
-    const showAllBtn = el('button', {
-      class: 'db-show-all', title: 'Show all downloads',
-      onclick: () => actions('openDownloadsPage')
-    }, 'Show all');
-
-    const tail = el('div', { class: 'db-tail' },
-      showAllBtn,
-      el('button', {
-        class: 'db-close', title: 'Close',
-        // stopPropagation prevents the container click handler from firing
-        // and closing any open chip menus.
-        onclick: (e) => { e.stopPropagation(); e.preventDefault(); actions('dismissAll'); }
-      }, '\u2715')
-    );
-
-    container.append(items, tail);
-    root.appendChild(container);
-
-    // Close any open menu when clicking elsewhere in the bar.
-    container.addEventListener('click', () => closeAnyMenu(root));
-
-    // Close on outside click. Events that originate inside the closed shadow
-    // get retargeted to the host as they bubble out, so we can detect
-    // "outside" by checking whether the composed target equals our host.
-    // Caret/menu-button clicks call stopPropagation, so they never reach
-    // this listener and the menu they just opened stays put.
+    // Add a handler to close any pop-up menu when we click outside the host.
+    // Events that originate inside the closed shadow get retargeted to the host as they bubble out,
+    // so we can detect "outside" by checking whether the composed target equals our host.
+    // Caret/menu-button clicks call stopPropagation, so they never reach this listener.
     const hostEl = root.host;
     if (hostEl && hostEl.ownerDocument) {
       hostEl.ownerDocument.addEventListener('click', (e) => {
@@ -103,118 +122,97 @@
       }, true);
     }
 
-    root.__db = {
-      container, items, tail, showAllBtn, actions,
-      // Tracks the rendered state of each download ID across renders so we
-      // can detect transitions (notably in_progress -> complete) and fire
-      // one-shot UI affordances like the completion flash.
-      lastState: new Map(),
-      // IDs that have already flashed on completion in this mount lifetime,
-      // so a later re-render of the same completed chip doesn't restart
-      // the animation.
-      flashed: new Set(),
-      // id -> wallclock ms when the flash animation started. Renders that
-      // happen during the 2500 ms flash window (e.g. an iconUrl arriving
-      // 200 ms in) re-apply the class with a negative animation-delay so
-      // the animation appears to continue rather than restart from frame 0.
-      flashStart: new Map()
-    };
+    _sendAction = actions;
   }
 
   function render(root, state) {
-    const ctx = root.__db;
-    if (!ctx) return;
-    const { items: list, actions } = ctx;
+    if (!_chipList) return;
 
     closeAnyMenu(root);
-    list.replaceChildren();
+    _chipList.replaceChildren();
 
-    const visibleItems = state.items.slice(0, BAR_CHIP_LIMIT);
+    // Mirror Chrome 113's kMaxDownloadViews = 15 (download_shelf_view.cc): keep at most 15 chips in the
+    // DOM and rely on flex/clip-path to hide any whose right edge overlaps the trailing cluster.
+    const visibleItems = state.items.slice(0, 15);
 
     if (!state.items.length) {
       // Reset transition tracking when the bar empties, so a later
       // download that reuses an old ID doesn't suppress its flash.
-      ctx.lastState.clear();
-      ctx.flashed.clear();
-      ctx.flashStart.clear();
+      _seenDownloadIds.clear();
+      _flashed.clear();
+      _flashStartedAt.clear();
       return;
     }
 
-    const nextLast = new Map();
+    const nextSeen = new Set();
     const liveIds = new Set();
 
     for (const item of visibleItems) {
       const isComplete = item.state === 'complete' && item.exists !== false;
 
       // Completion flash. Coordinated via two layers:
-      //   1. ctx.flashed: in-memory dedup for this mount lifetime.
-      //   2. state.flashedIds: SW-tracked set persisted in session storage,
-      //      so the flash doesn't re-fire in another tab or after SW restart.
-      //      The renderer acks every new flash via actions('markFlashed', id).
+      //   1. flashed: in-memory dedup for this mount lifetime.
+      //   2. state.flashedIds: SW-tracked set persisted in session storage, so the flash doesn't re-fire
+      //      in another tab or after SW restart. The renderer acks every new flash via
+      //      dispatch('markFlashed', id).
       const currState = progressState(item);
-      const isNewChip = !ctx.lastState.has(item.id);
+      const isNewChip = !_seenDownloadIds.has(item.id);
       const swFlashed = state.flashedIds && state.flashedIds.includes(item.id);
-      if (isComplete && !ctx.flashed.has(item.id) && !swFlashed) {
-        ctx.flashed.add(item.id);
-        ctx.flashStart.set(item.id, Date.now());
-        actions('markFlashed', item.id);
+      if (isComplete && !_flashed.has(item.id) && !swFlashed) {
+        _flashed.add(item.id);
+        _flashStartedAt.set(item.id, Date.now());
+        _sendAction('markFlashed', item.id);
       }
-      // A flash is "active" if it started within the 2500 ms window. Re-renders
-      // during that window re-apply the class with a negative animation-delay
-      // so the animation appears continuous.
-      const flashStartAt = ctx.flashStart.get(item.id);
-      const flashElapsed = flashStartAt != null ? Date.now() - flashStartAt : Infinity;
-      const shouldFlash = flashElapsed < FLASH_MS;
-      nextLast.set(item.id, currState);
+      // A flash is "active" if it started within the 2500 ms window. Re-renders during that window
+      // re-apply the class with a negative animation-delay so the animation appears continuous.
+      const startedAt = _flashStartedAt.get(item.id);
+      const flashElapsed = startedAt != null ? Date.now() - startedAt : Infinity;
+      const shouldFlash = flashElapsed < 2500;
+      nextSeen.add(item.id);
       liveIds.add(item.id);
 
       const iconWrap = el('div', {
         class: 'db-icon-wrap' + (shouldFlash ? ' db-icon-wrap--flash' : '')
       });
       if (shouldFlash) {
-        // Negative delay fast-forwards the CSS animation to the elapsed
-        // position, so a re-render mid-flash doesn't restart at frame 0.
+        // Negative delay fast-forwards the CSS animation to the elapsed position, so a re-render mid-flash
+        // doesn't restart at frame 0.
         iconWrap.style.setProperty('--db-flash-delay', `-${flashElapsed | 0}ms`);
       }
-      // Progress ring overlay: drawn while the download is active, and again
-      // (as a full-circle, opacity-pulsed full ring) during the 2500ms
-      // completion flash. Matches legacy Chrome 113's PaintDownloadProgress.
+      // Progress ring overlay: drawn while the download is active, and again (as a full-circle,
+      // opacity-pulsed full ring) during the 2500ms completion flash. Matches legacy Chrome 113's
+      // PaintDownloadProgress.
       if (shouldFlash) {
-        iconWrap.append(progressRingSvg(100, false));
+        iconWrap.append(progressRingSvg(100));
       } else if (currState === 'in_progress' || currState === 'paused') {
-        iconWrap.append(progressRingSvg(progressPct(item), false));
+        iconWrap.append(progressRingSvg(progressPct(item)));
       } else if (currState === 'indeterminate') {
-        iconWrap.append(progressRingSvg(0, true));
+        iconWrap.append(progressRingSvg(null));
       }
-      // Primary icon: the OS-supplied file icon (chrome.downloads.getFileIcon
-      // in the service worker, propagated via state.iconUrl). This is what
-      // the legacy Chrome 113 shelf shows -- the same icon Windows Explorer
-      // would draw for the file. While the SW is still fetching it, the
-      // icon slot stays blank (matching the legacy DownloadItemView, which
-      // draws nothing until the IconManager cache lookup returns).
+      // Primary icon: the OS-supplied file icon (chrome.downloads.getFileIcon in the service worker,
+      // propagated via state.iconUrl). This is what the legacy Chrome 113 shelf shows -- the same icon
+      // Windows Explorer would draw for the file. While the SW is still fetching it, the icon slot stays
+      // blank (matching the legacy DownloadItemView, which draws nothing until the IconManager cache
+      // lookup returns).
       if (item.iconUrl) {
-        const osIcon = document.createElement('img');
-        osIcon.src = item.iconUrl;
-        osIcon.alt = '';
-        osIcon.className = 'db-os-icon';
-        iconWrap.append(osIcon);
+        iconWrap.append(el('img', { class: 'db-os-icon', src: item.iconUrl, alt: '' }));
       }
 
       const [baseName, extName] = splitExt(item.basename || item.url || '(unknown)');
-      // Completed chips drop the status row entirely (a single centered
-      // filename). The interrupted-but-not-canceled case gets the red tint;
-      // canceled stays neutral grey, matching the reference recording.
+      // Completed chips drop the status row entirely (a single centered filename). The
+      // interrupted-but-not-canceled case gets the red tint; canceled stays neutral grey, matching the
+      // reference recording.
       const status = statusText(item);
       const textChildren = [
         el('div', { class: 'db-name' },
-          el('span', { class: 'db-name-base' }, baseName),
-          extName && el('span', { class: 'db-name-ext' }, extName)
+          el('span', { class: 'db-name__base' }, baseName),
+          extName && el('span', { class: 'db-name__ext' }, extName)
         )
       ];
       if (status) {
         textChildren.push(el('div', {
           class: 'db-status' +
-            (currState === 'interrupted' ? ' db-error' : '')
+            (currState === 'interrupted' ? ' db-status--error' : '')
         }, status));
       }
       const text = el('div', { class: 'db-text' }, ...textChildren);
@@ -229,24 +227,17 @@
           const existing = card.querySelector('.db-menu');
           closeAnyMenu(root);
           if (!existing) {
-            card.append(buildMenu(item, actions, root));
+            card.append(buildMenu(item, _sendAction, root));
             caret.classList.add('db-caret--open');
           }
         }
       });
-      // Chevron is always drawn pointing up; CSS rotates it 180deg when the
-      // caret carries db-caret--open, so menu open/close == chevron down/up.
-      const caretSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      caretSvg.setAttribute('viewBox', '0 0 10 10');
-      const chev = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-      chev.setAttribute('d', 'M1 7 L5 3 L9 7');
-      chev.setAttribute('fill', 'none');
-      chev.setAttribute('stroke', 'currentColor');
-      chev.setAttribute('stroke-width', '1.5');
-      chev.setAttribute('stroke-linecap', 'round');
-      chev.setAttribute('stroke-linejoin', 'round');
-      caretSvg.appendChild(chev);
-      caret.append(caretSvg);
+      // Mirrors Chromium 113's vector_icons::kCaretUpIcon (16dp rep): a 3-point chevron from
+      // (4,10) -> (8,6) -> (12,10) at stroke-width 1.765 on a 16x16 canvas. The chip's dropdown
+      // swaps to kCaretDownIcon when pressed (download_item_view.cc UpdateDropdownButtonImage);
+      // we instead rotate this SVG 180deg via .db-caret--open in CSS, which is geometrically
+      // identical (the down icon is the up icon mirrored about y=8).
+      caret.append(strokeIconSvg({ d: 'M4 10 L8 6 L12 10', strokeWidth: 1.765, join: 'round' }));
 
       card = el('div', {
         class: 'db-item' + (isNewChip ? ' db-item--enter' : ''),
@@ -254,19 +245,20 @@
         dataset: { state: progressState(item), clickable: isComplete ? '1' : '0' },
         title: item.filename || item.basename,
         onclick: isComplete
-          ? () => { if (!card.querySelector('.db-menu')) actions('open', item.id); }
+          ? () => { if (!card.querySelector('.db-menu')) _sendAction('open', item.id); }
           : undefined,
         ondragstart: isComplete ? (e) => onDragStart(e, item) : undefined
       });
 
       card.append(iconWrap, text, caret);
-      list.append(card);
+      _chipList.append(card);
     }
 
     // Commit next state and prune flashed IDs that are no longer present.
-    ctx.lastState = nextLast;
-    for (const id of [...ctx.flashed]) if (!liveIds.has(id)) ctx.flashed.delete(id);
-    for (const id of [...ctx.flashStart.keys()]) if (!liveIds.has(id)) ctx.flashStart.delete(id);
+    _seenDownloadIds.clear();
+    for (const id of nextSeen) _seenDownloadIds.add(id);
+    for (const id of [..._flashed]) if (!liveIds.has(id)) _flashed.delete(id);
+    for (const id of [..._flashStartedAt.keys()]) if (!liveIds.has(id)) _flashStartedAt.delete(id);
   }
 
   function onDragStart(e, item) {

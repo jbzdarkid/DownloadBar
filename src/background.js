@@ -1,7 +1,6 @@
 // DownloadBar -- service worker (MV3).
-// Tracks which download IDs are visible in the bar, persists the set in
-// session storage, and pushes state to connected tabs via long-lived
-// ports.
+// Tracks which download IDs are visible in the bar, persists the set in session storage,
+// and pushes state to connected tabs via long-lived ports.
 
 const VISIBLE_KEY = 'visibleIds';
 const FLASHED_KEY = 'flashedIds';
@@ -9,107 +8,135 @@ const FLASHED_KEY = 'flashedIds';
 const TICK_MS = 500;
 const ICON_SIZE = 32; // chrome.downloads.getFileIcon supports 16 or 32.
 
-async function loadSet(area, key) {
-  const stored = await chrome.storage[area].get(key);
-  return new Set(stored[key] || []);
+// Authoritative in-memory copies of the two persisted Sets. Storage is RAM-backed (chrome.storage.session
+// is cleared when the browser closes), so we hydrate once on first access and treat memory as the source of
+// truth thereafter; setX still writes through so other SW invocations after a restart can rehydrate.
+let _visible = null;
+let _flashed = null;
+
+async function getVisible() {
+  if (_visible === null) {
+    const stored = await chrome.storage.session.get(VISIBLE_KEY);
+    _visible = new Set(stored[VISIBLE_KEY] || []);
+  }
+  return _visible;
 }
 
-function saveSet(area, key, set) {
-  return chrome.storage[area].set({ [key]: [...set] });
+async function setVisible(set) {
+  _visible = set;
+  await chrome.storage.session.set({ [VISIBLE_KEY]: [...set] });
 }
 
-const getVisible    = ()    => loadSet('session', VISIBLE_KEY);
-const setVisible    = (set) => saveSet('session', VISIBLE_KEY, set);
-const getFlashed    = ()    => loadSet('session', FLASHED_KEY);
-const setFlashed    = (set) => saveSet('session', FLASHED_KEY, set);
+async function getFlashed() {
+  if (_flashed === null) {
+    const stored = await chrome.storage.session.get(FLASHED_KEY);
+    _flashed = new Set(stored[FLASHED_KEY] || []);
+  }
+  return _flashed;
+}
 
-/** @type {Set<chrome.runtime.Port>} */
-const ports = new Set();
+async function setFlashed(set) {
+  _flashed = set;
+  await chrome.storage.session.set({ [FLASHED_KEY]: [...set] });
+}
 
-// OS-supplied icons keyed by download id. Icons are stable once the file
-// exists, so cache forever and evict only on erase.
-/** @type {Map<number, string>} */
-const iconCache = new Map();
+const _ports = new Set();
+
+// OS-supplied icons keyed by download id.
+// Icons are stable once the file exists, so cache forever and evict only on erase.
+const _iconCache = new Map();
+// Dedupe concurrent getFileIcon calls for the same id.
+const _iconPending = new Map();
+
+// chrome.downloads.onChanged fires only on sparse checkpoints, so bytes/ETA appear to freeze.
+// While anything is transferring, poll every 500ms.
+let _tickTimer = null;
 
 async function fetchIcon(id) {
-  if (iconCache.has(id)) return iconCache.get(id);
-  const url = await new Promise((resolve) => {
-    chrome.downloads.getFileIcon(id, { size: ICON_SIZE }, (u) => {
+  if (_iconCache.has(id)) return _iconCache.get(id);
+  if (_iconPending.has(id)) return _iconPending.get(id);
+
+  const pending = new Promise((resolve) => {
+    chrome.downloads.getFileIcon(id, { size: ICON_SIZE }, (iconUrl) => {
       void chrome.runtime.lastError; // ignore "no file yet" errors
-      resolve(u);
+      resolve(iconUrl);
     });
   });
-  if (url) iconCache.set(id, url);
-  return url;
+  _iconPending.set(id, pending);
+  try {
+    const iconUrl = await pending;
+    if (iconUrl) _iconCache.set(id, iconUrl);
+    return iconUrl;
+  } finally {
+    _iconPending.delete(id);
+  }
 }
 
-function serialize(dl) {
+// Project Chrome's DownloadItem into the trimmed, normalized shape the renderer consumes.
+function serialize(download) {
   return {
-    id: dl.id,
-    filename: dl.filename || '',
-    basename: (dl.filename || '').split(/[\\/]/).pop(),
-    url: dl.url,
-    finalUrl: dl.finalUrl,
-    mime: dl.mime,
-    state: dl.state,
-    paused: !!dl.paused,
-    canResume: !!dl.canResume,
-    error: dl.error,
-    bytesReceived: dl.bytesReceived,
-    totalBytes: dl.totalBytes,
-    fileSize: dl.fileSize,
-    startTime: dl.startTime,
-    endTime: dl.endTime,
-    estimatedEndTime: dl.estimatedEndTime,
-    exists: dl.exists !== false
+    id: download.id,
+    filename: download.filename || '',
+    basename: (download.filename || '').split(/[\\/]/).pop(),
+    url: download.url,
+    finalUrl: download.finalUrl,
+    mime: download.mime,
+    state: download.state,
+    paused: !!download.paused,
+    canResume: !!download.canResume,
+    error: download.error,
+    bytesReceived: download.bytesReceived,
+    totalBytes: download.totalBytes,
+    estimatedEndTime: download.estimatedEndTime,
+    exists: download.exists !== false
   };
 }
 
 async function getState() {
   const visible = await getVisible();
-  const flashedIds = [...(await getFlashed())];
-  if (visible.size === 0) return { items: [], flashedIds };
 
-  const allDownloads = await chrome.downloads.search({});
-  const byId = new Map(allDownloads.map(dl => [dl.id, dl]));
+  // Resolve each visible id to a download record in parallel; drop ids whose download no longer exists.
+  const lookup = async (id) => {
+    const [download] = await chrome.downloads.search({ id });
+    if (download) return serialize(download);
+    visible.delete(id);
+    return null;
+  };
+  const before = visible.size;
+  const items = (await Promise.all(Array.from(visible, lookup))).filter(Boolean);
+  if (visible.size < before) await setVisible(visible);
 
-  // Prune visible IDs that no longer exist.
-  let pruned = false;
-  for (const id of [...visible]) {
-    if (!byId.has(id)) { visible.delete(id); pruned = true; }
-  }
-  if (pruned) await setVisible(visible);
+  // Sort downloaded items by time (implicit by download ID).
+  // Note that download IDs are persistent and stable per-profile, too.
+  items.sort((a, b) => b.id - a.id);
 
-  // Newest first; the renderer slices.
-  const items = [...visible]
-    .map(id => serialize(byId.get(id)))
-    .sort((a, b) => new Date(b.startTime) - new Date(a.startTime));
-
-  // Attach cached icons; fetch missing ones async and rebroadcast on arrival.
+  // Attach cached icons; kick off fetches for misses and rebroadcast once any resolve.
+  const pending = [];
   for (const item of items) {
-    const cached = iconCache.get(item.id);
+    const cached = _iconCache.get(item.id);
     if (cached) item.iconUrl = cached;
-    else fetchIcon(item.id).then((url) => { if (url) broadcast(); });
+    else pending.push(fetchIcon(item.id));
+  }
+  if (pending.length) {
+    Promise.all(pending).then((urls) => { if (urls.some(Boolean)) broadcast(); });
   }
 
+  const flashedIds = [...await getFlashed()];
   return { items, flashedIds };
 }
 
-// chrome.downloads.onChanged fires only on sparse checkpoints, so bytes/ETA
-// appear to freeze. While anything is transferring, poll every 500ms.
-let tickTimer = null;
 async function broadcast() {
   const state = await getState();
-  for (const port of ports) {
-    try { port.postMessage({ type: 'state', state }); } catch { /* port closed */ }
+  for (const port of _ports) {
+    try { port.postMessage(state); } catch { /* port closed */ }
   }
-  const wantTicker = state.items.some(i => i.state === 'in_progress' && !i.paused);
-  const haveTicker = tickTimer != null;
+  const wantTicker = state.items.some(item => item.state === 'in_progress' && !item.paused);
+  const haveTicker = _tickTimer != null;
   if (wantTicker && !haveTicker) {
-    tickTimer = setInterval(broadcast, TICK_MS);
+    _tickTimer = setInterval(broadcast, TICK_MS);
   } else if (!wantTicker && haveTicker) {
-    clearInterval(tickTimer);
-    tickTimer = null;
+    clearInterval(_tickTimer);
+    _tickTimer = null;
   } else {
     // Do nothing -- what we want is what we have.
   }
@@ -126,7 +153,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
 chrome.downloads.onChanged.addListener(() => broadcast());
 
 chrome.downloads.onErased.addListener(async (id) => {
-  iconCache.delete(id);
+  _iconCache.delete(id);
   const visible = await getVisible();
   if (visible.delete(id)) await setVisible(visible);
   const flashed = await getFlashed();
@@ -139,14 +166,12 @@ broadcast();
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== 'downloadbar') return;
-  ports.add(port);
-  port.onDisconnect.addListener(() => ports.delete(port));
+  _ports.add(port);
+  port.onDisconnect.addListener(() => _ports.delete(port));
   getState().then(state => {
-    try { port.postMessage({ type: 'state', state }); } catch { /* closed */ }
+    try { port.postMessage(state); } catch { /* closed */ }
   });
 });
-
-// ---- one-shot action messages ----
 
 const handlers = {
   getState: () => getState(),
@@ -169,21 +194,26 @@ const handlers = {
   cancel:     ({ id }) => chrome.downloads.cancel(id),
 
   retry: async ({ id }) => {
-    const [orig] = await chrome.downloads.search({ id });
-    if (orig && orig.url) await chrome.downloads.download({ url: orig.url });
+    const [original] = await chrome.downloads.search({ id });
+    if (original && original.url) await chrome.downloads.download({ url: original.url });
   },
 
   openDownloadsPage: () => chrome.tabs.create({ url: 'chrome://downloads' }),
 
   markFlashed: async ({ id }) => {
     const flashed = await getFlashed();
-    if (!flashed.has(id)) { flashed.add(id); await setFlashed(flashed); }
+    if (flashed.has(id)) return;
+    flashed.add(id);
+    await setFlashed(flashed);
   },
 };
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   const handler = msg && handlers[msg.action];
-  if (!handler) { sendResponse({ ok: false, error: 'unknown action' }); return; }
+  if (!handler) {
+    sendResponse({ ok: false, error: 'unknown action' });
+    return;
+  }
   Promise.resolve(handler(msg))
     .then((result) => sendResponse(result !== undefined ? result : { ok: true }))
     .catch((err) => sendResponse({ ok: false, error: String(err && err.message || err) }));
