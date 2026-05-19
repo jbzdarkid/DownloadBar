@@ -226,6 +226,16 @@
       white-space: nowrap;
     }
     .db-menu .db-menu-item[disabled] { cursor: default; opacity: 0.5; }
+    .db-menu .db-menu-check {
+      flex: 0 0 auto;
+      width: 14px;
+      height: 14px;
+      margin-right: 6px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .db-menu .db-menu-check svg { width: 12px; height: 12px; display: block; }
     .db-menu .db-menu-label { flex: 1 1 auto; }
     .db-menu .db-menu-item:hover { background: light-dark(rgba(0,0,0,0.07), rgba(255,255,255,0.08)); }
     .db-menu hr {

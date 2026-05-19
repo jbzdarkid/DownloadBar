@@ -9,7 +9,6 @@
 
   let _host = null;
   let _shadow = null;
-  // Long-lived port: SW pushes state on connect and on every change.
   let _port;
 
   // Renderer calls actions(name, id) to send a message to the SW.
@@ -21,6 +20,8 @@
     _host.id = '__downloadbar_host__';
     _host.style.cssText =
       'all: initial !important;' +
+      // `all: initial !important` overrides the :host font-family rule, so restore it inline.
+      'font-family: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif !important;' +
       'position: fixed !important;' +
       'left: 0 !important; right: 0 !important; bottom: 0 !important;' +
       'z-index: 2147483647 !important;' +

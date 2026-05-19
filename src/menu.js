@@ -1,7 +1,12 @@
 // DownloadBar -- chip dropdown menu builder.
 // Menu shape adapted from the Chrome 113 reference capture (see docs/SHELF_BEHAVIOR.md).
-// "Open when done" and "Always open files of this type" are intentionally omitted: both require the SW to
-// auto-invoke chrome.downloads.open() without user activation, which recent Chrome versions reject.
+//
+// Legacy Chrome offered two "auto-open" toggles here: "Open when done" (per-download) and
+// "Always open files of this type" (per-extension, persistent). MV3 forbids the SW from calling
+// chrome.downloads.open() without a user gesture, so we cannot literally restore those. We instead
+// expose notify-equivalents -- "Notify when done" and "Always notify for files of this type" --
+// which flash the Chrome taskbar button on completion via chrome.windows.update({drawAttention:true}).
+// See DESIGN.md "Notify-on-complete" for the full rationale.
 
 (function () {
   const NS = (window.__DB = window.__DB || {});
@@ -19,44 +24,67 @@
 
   function buildMenu(item, actions, root) {
     const { el } = NS.dom;
+    const { menuCheckSvg } = NS.svg;
 
     const menu = el('div', { class: 'db-menu', onclick: (e) => e.stopPropagation() });
 
     const add = (label, fn, opts = {}) => {
       const btn = el('button', {
-        class: 'db-menu-item',
+        class: 'db-menu-item' + (opts.checked ? ' db-menu-item--checked' : ''),
         disabled: !!opts.disabled || undefined,
         onclick: opts.disabled ? undefined : () => {
           closeAnyMenu(root);
           fn();
         }
       },
+        el('span', { class: 'db-menu-check', 'aria-hidden': 'true' },
+          opts.checked ? menuCheckSvg() : null
+        ),
         el('span', { class: 'db-menu-label' }, label)
       );
       menu.append(btn);
     };
     const sep = () => menu.append(document.createElement('hr'));
 
+    // "Notify when done" and "Always notify for files of this type" are independent toggles;
+    // the row reads as checked whenever either is on, since the per-extension rule subsumes it.
+    // These two need payload fields beyond {action, id}, so they bypass the strict actions() helper.
+    const toggleNotify = () => chrome.runtime.sendMessage({ action: 'setNotifyWhenDone', id: item.id, enabled: !item.notifyWhenDone });
+    const toggleAlways = () => chrome.runtime.sendMessage({ action: 'setAlwaysNotifyExt', ext: item.ext, enabled: !item.alwaysNotifyExt });
+
     if (item.state === 'in_progress') {
-      if (item.paused) {
-        add('Resume', () => actions('resume', item.id));
-      } else {
-        add('Pause', () => actions('pause', item.id), { disabled: !item.canResume && item.bytesReceived === 0 });
+      add('Notify when done', toggleNotify, { checked: item.notifyWhenDone || item.alwaysNotifyExt });
+      if (item.ext) {
+        add('Always notify for files of this type', toggleAlways, { checked: item.alwaysNotifyExt });
       }
-      add('Show in folder', () => actions('show', item.id), { disabled: !item.filename });
+      sep();
+      if (item.paused) {
+        add('Resume', () => actions('resume', item.id), { disabled: !item.canResume });
+      } else {
+        add('Pause', () => actions('pause', item.id));
+      }
+      add('Show in folder', () => actions('show', item.id));
       sep();
       add('Cancel', () => actions('cancel', item.id));
 
     } else if (item.state === 'complete') {
       if (item.exists !== false) {
         add('Open', () => actions('open', item.id));
+        if (item.ext) {
+          add('Always notify for files of this type', toggleAlways, { checked: item.alwaysNotifyExt });
+        }
         add('Show in folder', () => actions('show', item.id));
         sep();
       }
       add('Remove from list', () => actions('dismiss', item.id));
 
     } else if (item.state === 'interrupted') {
-      add('Retry', () => actions('retry', item.id));
+      // Resume preserves partial bytes; Retry re-requests from byte 0 via downloads.download.
+      if (item.canResume) {
+        add('Resume', () => actions('resume', item.id));
+      } else {
+        add('Retry', () => actions('retry', item.id));
+      }
       sep();
       add('Remove from list', () => actions('dismiss', item.id));
     }

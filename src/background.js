@@ -4,40 +4,45 @@
 
 const VISIBLE_KEY = 'visibleIds';
 const FLASHED_KEY = 'flashedIds';
+// Session-scoped: ids the user toggled "Notify when done" on, awaiting completion.
+const NOTIFY_ON_DONE_KEY = 'notifyOnDoneIds';
+// Persistent: lowercased file extensions opted into "Always notify for files of this type".
+const ALWAYS_NOTIFY_EXTS_KEY = 'alwaysNotifyExts';
 
 const TICK_MS = 500;
 const ICON_SIZE = 32; // chrome.downloads.getFileIcon supports 16 or 32.
 
-// Authoritative in-memory copies of the two persisted Sets. Storage is RAM-backed (chrome.storage.session
-// is cleared when the browser closes), so we hydrate once on first access and treat memory as the source of
-// truth thereafter; setX still writes through so other SW invocations after a restart can rehydrate.
-let _visible = null;
-let _flashed = null;
-
-async function getVisible() {
-  if (_visible === null) {
-    const stored = await chrome.storage.session.get(VISIBLE_KEY);
-    _visible = new Set(stored[VISIBLE_KEY] || []);
-  }
-  return _visible;
+// Authoritative in-memory copies of the persisted Sets. Storage is RAM-backed for session keys
+// (chrome.storage.session is cleared when the browser closes), persistent for chrome.storage.local.
+// We hydrate once on first access and treat memory as the source of truth thereafter; setX still writes
+// through so other SW invocations after a restart can rehydrate.
+function persistedSet(key, persist = false) {
+  const storage = persist ? chrome.storage.local : chrome.storage.session;
+  let cache = null;
+  return [
+    async () => {
+      if (cache === null) cache = new Set((await storage.get(key))[key] || []);
+      return cache;
+    },
+    async (value) => {
+      cache = value;
+      await storage.set({ [key]: [...value] });
+    },
+  ];
 }
 
-async function setVisible(set) {
-  _visible = set;
-  await chrome.storage.session.set({ [VISIBLE_KEY]: [...set] });
-}
+const [getVisible, setVisible] = persistedSet(VISIBLE_KEY);
+const [getFlashed, setFlashed] = persistedSet(FLASHED_KEY);
+const [getNotifyOnDone, setNotifyOnDone] = persistedSet(NOTIFY_ON_DONE_KEY);
+const [getAlwaysNotifyExts, setAlwaysNotifyExts] = persistedSet(ALWAYS_NOTIFY_EXTS_KEY, /*persist=*/true);
 
-async function getFlashed() {
-  if (_flashed === null) {
-    const stored = await chrome.storage.session.get(FLASHED_KEY);
-    _flashed = new Set(stored[FLASHED_KEY] || []);
-  }
-  return _flashed;
-}
-
-async function setFlashed(set) {
-  _flashed = set;
-  await chrome.storage.session.set({ [FLASHED_KEY]: [...set] });
+// Lowercased extension without leading dot, or '' if the basename has none.
+// Mirrors how Chrome 113 keys the native "Always open files of this type" preference.
+function getExt(basename) {
+  if (!basename) return '';
+  const i = basename.lastIndexOf('.');
+  if (i <= 0 || i === basename.length - 1) return '';
+  return basename.slice(i + 1).toLowerCase();
 }
 
 const _ports = new Set();
@@ -73,11 +78,16 @@ async function fetchIcon(id) {
 }
 
 // Project Chrome's DownloadItem into the trimmed, normalized shape the renderer consumes.
-function serialize(download) {
+// notifyOnDoneIds and alwaysNotifyExts are passed in so the menu can render checkmark state without
+// each chip making its own async lookup; getState() hydrates them once and threads them through.
+function serialize(download, notifyOnDoneIds, alwaysNotifyExts) {
+  const basename = (download.filename || '').split(/[\\/]/).pop();
+  const ext = getExt(basename);
   return {
     id: download.id,
     filename: download.filename || '',
-    basename: (download.filename || '').split(/[\\/]/).pop(),
+    basename,
+    ext,
     url: download.url,
     finalUrl: download.finalUrl,
     mime: download.mime,
@@ -88,17 +98,21 @@ function serialize(download) {
     bytesReceived: download.bytesReceived,
     totalBytes: download.totalBytes,
     estimatedEndTime: download.estimatedEndTime,
-    exists: download.exists !== false
+    exists: download.exists !== false,
+    notifyWhenDone: notifyOnDoneIds.has(download.id),
+    alwaysNotifyExt: ext ? alwaysNotifyExts.has(ext) : false
   };
 }
 
 async function getState() {
   const visible = await getVisible();
+  const notifyOnDoneIds = await getNotifyOnDone();
+  const alwaysNotifyExts = await getAlwaysNotifyExts();
 
   // Resolve each visible id to a download record in parallel; drop ids whose download no longer exists.
   const lookup = async (id) => {
     const [download] = await chrome.downloads.search({ id });
-    if (download) return serialize(download);
+    if (download) return serialize(download, notifyOnDoneIds, alwaysNotifyExts);
     visible.delete(id);
     return null;
   };
@@ -150,7 +164,19 @@ chrome.downloads.onCreated.addListener(async (item) => {
   broadcast();
 });
 
-chrome.downloads.onChanged.addListener(() => broadcast());
+chrome.downloads.onChanged.addListener(async (delta) => {
+  if (delta.state) {
+    if (delta.state.current === 'complete') {
+      await maybeDrawAttention(delta.id);
+    } else if (delta.state.current === 'interrupted') {
+      // A canceled / failed download never triggers a notify; clear any pending one-shot flag
+      // so a future ID collision after SW restart can't fire a stale flash.
+      const notifyOnDoneIds = await getNotifyOnDone();
+      if (notifyOnDoneIds.delete(delta.id)) await setNotifyOnDone(notifyOnDoneIds);
+    }
+  }
+  broadcast();
+});
 
 chrome.downloads.onErased.addListener(async (id) => {
   _iconCache.delete(id);
@@ -158,10 +184,41 @@ chrome.downloads.onErased.addListener(async (id) => {
   if (visible.delete(id)) await setVisible(visible);
   const flashed = await getFlashed();
   if (flashed.delete(id)) await setFlashed(flashed);
+  const notifyOnDoneIds = await getNotifyOnDone();
+  if (notifyOnDoneIds.delete(id)) await setNotifyOnDone(notifyOnDoneIds);
   broadcast();
 });
 
-// Restart the ticker on SW boot if a download is already in progress.
+// Draw attention on the Chrome taskbar button for the user's last-focused window when a download
+// completes, if the user opted in via either the per-download "Notify when done" toggle or the
+// per-extension "Always notify for files of this type" rule. This is our adaptation of Chromium's
+// legacy auto-open behavior -- the MV3 user-gesture gate makes a true auto-open impossible from a SW
+// callback, so we settle for an attention signal instead. chrome.windows.update({drawAttention:true})
+// maps to Win32 FlashWindowEx; it's a no-op when the window is already focused.
+// Called from onChanged on the in_progress->complete transition, which Chrome fires exactly once,
+// so no per-id dedup set is needed.
+async function maybeDrawAttention(id) {
+  const notifyOnDoneIds = await getNotifyOnDone();
+  let trigger = notifyOnDoneIds.has(id);
+  if (!trigger) {
+    const [download] = await chrome.downloads.search({ id });
+    if (download) {
+      const basename = (download.filename || '').split(/[\\/]/).pop();
+      const ext = getExt(basename);
+      const alwaysNotifyExts = await getAlwaysNotifyExts();
+      if (ext && alwaysNotifyExts.has(ext)) trigger = true;
+    }
+  }
+  if (!trigger) return;
+
+  if (notifyOnDoneIds.delete(id)) await setNotifyOnDone(notifyOnDoneIds);
+
+  try {
+    const win = await chrome.windows.getLastFocused();
+    if (win) await chrome.windows.update(win.id, { drawAttention: true });
+  } catch { /* no window available, or it closed between the two calls */ }
+}
+
 broadcast();
 
 chrome.runtime.onConnect.addListener((port) => {
@@ -205,6 +262,34 @@ const handlers = {
     if (flashed.has(id)) return;
     flashed.add(id);
     await setFlashed(flashed);
+  },
+
+  // Per-download "Notify when done" toggle. One-shot: cleared automatically when the download
+  // completes (or fails). The current download still gets the flash if its extension is also in
+  // alwaysNotifyExts, since maybeDrawAttention() OR's the two triggers.
+  setNotifyWhenDone: async ({ id, enabled }) => {
+    const notifyOnDoneIds = await getNotifyOnDone();
+    const isOn = notifyOnDoneIds.has(id);
+    if (enabled === isOn) return;
+    if (enabled) notifyOnDoneIds.add(id);
+    else notifyOnDoneIds.delete(id);
+    await setNotifyOnDone(notifyOnDoneIds);
+    broadcast();
+  },
+
+  // Per-extension "Always notify for files of this type" toggle. Persistent across browser
+  // restarts (chrome.storage.local). Applies to any future download of that extension, and to
+  // the currently-in-progress chip if the toggle was flipped while it's still transferring --
+  // maybeDrawAttention() consults the live set at completion time.
+  setAlwaysNotifyExt: async ({ ext, enabled }) => {
+    if (!ext) return;
+    const alwaysNotifyExts = await getAlwaysNotifyExts();
+    const isOn = alwaysNotifyExts.has(ext);
+    if (enabled === isOn) return;
+    if (enabled) alwaysNotifyExts.add(ext);
+    else alwaysNotifyExts.delete(ext);
+    await setAlwaysNotifyExts(alwaysNotifyExts);
+    broadcast();
   },
 };
 

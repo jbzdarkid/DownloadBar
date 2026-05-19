@@ -5,6 +5,8 @@
 //   in progress : `0.5/10.0 MB, 5 mins left`      (single unit, no spaces around `/`)
 //   no ETA      : `0.5/10.0 MB`                   (in_progress, estimatedEndTime missing/past)
 //   starting    : `Starting...`                   (in_progress, no bytes yet)
+//   notify on   : `Notify in 6 mins...`           (in_progress with notifyWhenDone or alwaysNotifyExt;
+//                                                  mirrors legacy "Opening in N mins..." substitution)
 //   paused      : `0.7/100 MB, Paused`            (ETA replaced by literal `Paused`)
 //   canceled    : `Canceled`                      (interrupted + error=USER_CANCELED)
 //   failed      : `Failed - Network disconnected` (interrupted + mapped error)
@@ -18,19 +20,19 @@
   const NS = (window.__DB = window.__DB || {});
   if (NS.format) return;
 
-  const UNITS = ['B', 'KB', 'MB', 'GB', 'TB'];
-
-  function fmtOne(scaled) {
-    if (scaled >= 100) return String(Math.round(scaled));
-    return (Math.round(scaled * 10) / 10).toFixed(1);
-  }
-
   // Render received/total with a single shared unit suffix chosen by the larger of the two:
   // `0.5/10.0 MB`, never `512 KB / 10.0 MB`.
   function fmtBytePair(received, total) {
-    const ref = Math.max(received || 0, total || 0);
-    let unitIndex = 0, scale = 1;
-    while (ref / scale >= 1024 && unitIndex < UNITS.length - 1) {
+    const UNITS = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const fmtOne = (scaled) => scaled >= 100
+      ? String(Math.round(scaled))
+      : (Math.round(scaled * 10) / 10).toFixed(1);
+    // Pick the unit from total; fall back to received for indeterminate downloads (total unknown).
+    const unitBasis = total || received || 0;
+
+    let unitIndex = 0;
+    let scale = 1;
+    while (unitBasis / scale >= 1024 && unitIndex < UNITS.length - 1) {
       scale *= 1024;
       unitIndex++;
     }
@@ -47,10 +49,10 @@
     const remainingMs = new Date(iso).getTime() - Date.now();
     if (!isFinite(remainingMs) || remainingMs <= 0) return '';
     const seconds = Math.round(remainingMs / 1000);
-    if (seconds < 60) return seconds + ' secs left';
+    if (seconds < 60) return seconds + ' secs';
     const minutes = Math.round(seconds / 60);
-    if (minutes < 60) return minutes + ' mins left';
-    return Math.round(minutes / 60) + ' hrs left';
+    if (minutes < 60) return minutes + ' mins';
+    return Math.round(minutes / 60) + ' hrs';
   }
 
   // chrome.downloads.InterruptReason -> human text.
@@ -92,21 +94,28 @@
   }
 
   function statusText(item) {
-    // Completed chips drop the status row; "Removed" is the one exception.
-    if (item.state === 'complete') return item.exists === false ? 'Removed' : '';
-    if (item.state === 'interrupted') {
+    // chrome.downloads.State is a three-value enum. Branch order matches menu.js / progressState().
+    if (item.state === 'in_progress') {
+      if (item.paused) return fmtBytePair(item.bytesReceived, item.totalBytes) + ', Paused';
+      if (!item.bytesReceived) return 'Starting...';
+      const eta = fmtEta(item.estimatedEndTime);
+      const bytes = fmtBytePair(item.bytesReceived, item.totalBytes);
+
+      if (item.notifyWhenDone || item.alwaysNotifyExt) return eta ? `Notify in ${eta}...` : 'Notify when done';
+      return eta ? `${bytes}, ${eta} left` : bytes;
+
+    } else if (item.state === 'complete') {
+      // Completed chips drop the status row; "Removed" is the one exception.
+      return item.exists === false ? 'Removed' : '';
+
+    } else if (item.state === 'interrupted') {
       if (isCanceled(item)) return 'Canceled';
       if (!item.error) return 'Failed';
       const reason = ERROR_MESSAGES[item.error] ||
         item.error.replace(/_/g, ' ').toLowerCase().replace(/^./, ch => ch.toUpperCase());
       return 'Failed - ' + reason;
     }
-    if (item.paused) return fmtBytePair(item.bytesReceived, item.totalBytes) + ', Paused';
-    // in_progress
-    if (!item.bytesReceived) return 'Starting...';
-    const bytes = fmtBytePair(item.bytesReceived, item.totalBytes);
-    const eta = fmtEta(item.estimatedEndTime);
-    return eta ? `${bytes}, ${eta}` : bytes;
+    return '';
   }
 
   function progressState(item) {

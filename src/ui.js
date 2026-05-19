@@ -1,5 +1,5 @@
 // DownloadBar -- renderer orchestrator.
-// Consumes helpers from window.__DB (styles, dom, format, menu) and exposes
+// Consumes helpers from window.__DB (styles, dom, svg, format, menu) and exposes
 // the public window.DownloadBar surface used by content.js:
 //   mount(root, actions)   -- install stylesheet + chrome skeleton into a
 //                            shadow root, prime per-mount state.
@@ -9,6 +9,7 @@
   if (window.DownloadBar) return;
   const NS = window.__DB || {};
   const { el } = NS.dom;
+  const { strokeIconSvg, progressRingSvg } = NS.svg;
   const { statusText, progressState, progressPct } = NS.format;
   const { closeAnyMenu, buildMenu } = NS.menu;
 
@@ -25,58 +26,6 @@
     const i = name.lastIndexOf('.');
     if (i <= 0 || i === name.length - 1) return [name, ''];
     return [name.slice(0, i), name.slice(i)];
-  }
-
-  // Build an SVG element mirroring a Chromium vector_icon: a single stroked path on a square canvas,
-  // with stroke color bound to currentColor so CSS controls tint. Used for the close X and the chip caret.
-  function strokeIconSvg({ size = 16, d, strokeWidth, join = 'miter' }) {
-    const ns = 'http://www.w3.org/2000/svg';
-    const svg = document.createElementNS(ns, 'svg');
-    svg.setAttribute('viewBox', `0 0 ${size} ${size}`);
-    const path = document.createElementNS(ns, 'path');
-    path.setAttribute('d', d);
-    path.setAttribute('fill', 'none');
-    path.setAttribute('stroke', 'currentColor');
-    path.setAttribute('stroke-width', String(strokeWidth));
-    path.setAttribute('stroke-linecap', 'round');
-    if (join === 'round') path.setAttribute('stroke-linejoin', 'round');
-    svg.appendChild(path);
-    return svg;
-  }
-
-  // Draw download progress as an SVG ring around the icon while downloading, then the full ring flashes on completion.
-  // Matches the geometry of Chrome 113's PaintDownloadProgress: 1.7 px stroke, start at 12 o'clock, sweep clockwise.
-  // Pass percent=null for indeterminate mode, which draws a fixed 50-degree arc and uses CSS to animate SVG rotation.
-  function progressRingSvg(percent) {
-    const indeterminate = percent == null;
-    const svgNs = 'http://www.w3.org/2000/svg';
-    const r = 10.15;
-    const c = 2 * Math.PI * r;
-    const fgLen = indeterminate ? (c * 50 / 360) : (c * Math.max(0, Math.min(100, percent)) / 100);
-    const svg = document.createElementNS(svgNs, 'svg');
-    svg.setAttribute('class', 'db-progress-ring' + (indeterminate ? ' db-progress-ring--indeterminate' : ''));
-    svg.setAttribute('viewBox', '0 0 24 24');
-    if (!indeterminate) {
-      const bg = document.createElementNS(svgNs, 'circle');
-      bg.setAttribute('class', 'db-progress-ring__bg');
-      bg.setAttribute('cx', '12');
-      bg.setAttribute('cy', '12');
-      bg.setAttribute('r', String(r));
-      bg.setAttribute('stroke-width', '1.7');
-      svg.appendChild(bg);
-    }
-    const fg = document.createElementNS(svgNs, 'circle');
-    fg.setAttribute('class', 'db-progress-ring__fg');
-    fg.setAttribute('cx', '12');
-    fg.setAttribute('cy', '12');
-    fg.setAttribute('r', String(r));
-    fg.setAttribute('stroke-width', '1.7');
-    fg.setAttribute('stroke-linecap', 'butt');
-    fg.setAttribute('stroke-dasharray', `${fgLen.toFixed(3)} ${c.toFixed(3)}`);
-    // Rotate -90deg around the circle center so the dash starts at 12 o'clock.
-    fg.setAttribute('transform', 'rotate(-90 12 12)');
-    svg.appendChild(fg);
-    return svg;
   }
 
   function mount(root, actions) {
@@ -104,9 +53,7 @@
             actions('dismissAll');
           }
         },
-          // Mirrors Chromium 113's vector_icons::kCloseRoundedIcon (16dp rep):
-          // Two rounded-cap strokes from (4,4)->(12,12) and (4,12)->(12,4) at stroke-width 1.85 on a 16x16 canvas.
-          strokeIconSvg({ d: 'M4 4 L12 12 M4 12 L12 4', strokeWidth: 1.85 })
+          closeIconSvg()
         )
       )
     ));
@@ -232,21 +179,30 @@
           }
         }
       });
-      // Mirrors Chromium 113's vector_icons::kCaretUpIcon (16dp rep): a 3-point chevron from
-      // (4,10) -> (8,6) -> (12,10) at stroke-width 1.765 on a 16x16 canvas. The chip's dropdown
-      // swaps to kCaretDownIcon when pressed (download_item_view.cc UpdateDropdownButtonImage);
-      // we instead rotate this SVG 180deg via .db-caret--open in CSS, which is geometrically
-      // identical (the down icon is the up icon mirrored about y=8).
-      caret.append(strokeIconSvg({ d: 'M4 10 L8 6 L12 10', strokeWidth: 1.765, join: 'round' }));
+      caret.append(caretIconSvg());
 
+      // In-progress chips are also clickable: a body-click toggles "Notify when done" for that
+      // download, mirroring Chrome 113's behavior where clicking an in-progress chip set
+      // open_when_complete on the underlying DownloadItem. The menu's "Notify when done" row is the
+      // secondary affordance with the explicit checkmark. Body-click is a no-op visual while the
+      // per-extension always-rule is on (the flash would happen anyway).
+      const isInProgress = item.state === 'in_progress';
       card = el('div', {
         class: 'db-item' + (isNewChip ? ' db-item--enter' : ''),
         draggable: isComplete,
-        dataset: { state: progressState(item), clickable: isComplete ? '1' : '0' },
+        dataset: {
+          state: progressState(item),
+          clickable: (isComplete || isInProgress) ? '1' : '0'
+        },
         title: item.filename || item.basename,
         onclick: isComplete
           ? () => { if (!card.querySelector('.db-menu')) _sendAction('open', item.id); }
-          : undefined,
+          : isInProgress
+            ? () => {
+                if (card.querySelector('.db-menu')) return;
+                _sendAction('setNotifyWhenDone', item.id, { enabled: !item.notifyWhenDone });
+              }
+            : undefined,
         ondragstart: isComplete ? (e) => onDragStart(e, item) : undefined
       });
 
