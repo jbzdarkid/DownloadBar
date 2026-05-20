@@ -1,5 +1,4 @@
-// DownloadBar -- generic DOM helpers.
-// Attached to the internal __DB namespace; consumed by ui.js and menu.js.
+// DownloadBar -- generic DOM helper for creating elements ("hyperscript").
 
 (function () {
   const NS = (window.__DB = window.__DB || {});

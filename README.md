@@ -1,6 +1,9 @@
-# DownloadBar -- design notes
+# DownloadBar
 
 A small MV3 extension that restores a Chrome-style download shelf across the bottom of every page. No build step, no framework, no dependencies.
+
+Chrome/Edge: <link pending>
+Firefox: <link pending>
 
 ## Goals
 
@@ -49,7 +52,6 @@ Instead, we built a feature that's basically the same -- notify the user when th
 
 ## Future work
 
-- **Drag-to-extract.** Drag a completed chip onto the desktop or another app to copy the file. The new Chrome bubble does this; the classic shelf did too. Likely via `DataTransfer.setData('DownloadURL', ...)` with a synthetic drag from the chip element.
 - **Persistence across restarts.** On SW boot, rehydrate chips from `chrome.downloads.search`. Option to restore everything recent vs. only interrupted/paused downloads with `canResume: true`.
 - **Grouping.** When several downloads arrive from the same origin within a few seconds (image-savers, "download all"), collapse them into a single expandable chip. Both the classic shelf and the new bubble flood badly in this case.
 - **Pinning.** Right-click -> pin a chip; survives auto-dismiss and "clear all". For the "I'll deal with that installer in a minute" case.

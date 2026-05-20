@@ -2,7 +2,8 @@
 // Tracks which download IDs are visible in the bar, persists the set in session storage,
 // and pushes state to connected tabs via long-lived ports.
 
-importScripts('./settings.js');
+// Firefox loads this implicitly from background.scripts, and will error here if we try again.
+if (typeof importScripts === 'function') importScripts('./settings.js');
 
 const VISIBLE_KEY = 'visibleIds';
 const FLASHED_KEY = 'flashedIds';
@@ -41,19 +42,6 @@ const [getFlashed, setFlashed] = persistedSet(FLASHED_KEY);
 const [getNotifyOnDone, setNotifyOnDone] = persistedSet(NOTIFY_ON_DONE_KEY);
 const [getAlwaysNotifyExts, setAlwaysNotifyExts] = persistedSet(ALWAYS_NOTIFY_EXTS_KEY, /*persist=*/true);
 
-// Lowercased extension for download-type matching. Prefers known compounds (.tar.gz over
-// just .gz) so users can opt into notifications on the type they actually care about.
-function getExt(basename) {
-  if (!basename) return '';
-  const lower = basename.toLowerCase();
-  for (const compound of COMPOUND_EXTS) {
-    if (lower.endsWith('.' + compound)) return compound;
-  }
-  const i = lower.lastIndexOf('.');
-  if (i <= 0 || i === lower.length - 1) return '';
-  return lower.slice(i + 1);
-}
-
 const _ports = new Set();
 
 // OS-supplied icons keyed by download id.
@@ -91,15 +79,13 @@ async function fetchIcon(id) {
 // each chip making its own async lookup; getState() hydrates them once and threads them through.
 function serialize(download, notifyOnDoneIds, alwaysNotifyExts) {
   const basename = (download.filename || '').split(/[\\/]/).pop();
-  const ext = getExt(basename);
+  const ext = extFromFilename(basename);
   return {
     id: download.id,
     filename: download.filename || '',
     basename,
     ext,
     url: download.url,
-    finalUrl: download.finalUrl,
-    mime: download.mime,
     state: download.state,
     paused: !!download.paused,
     canResume: !!download.canResume,
@@ -178,8 +164,7 @@ chrome.downloads.onChanged.addListener(async (delta) => {
     if (delta.state.current === 'complete') {
       await maybeDrawAttention(delta.id);
     } else if (delta.state.current === 'interrupted') {
-      // A canceled / failed download never triggers a notify; clear any pending one-shot flag
-      // so a future ID collision after SW restart can't fire a stale flash.
+      // The download won't complete, so any pending "Notify when done" flag is dead -- drop it.
       const notifyOnDoneIds = await getNotifyOnDone();
       if (notifyOnDoneIds.delete(delta.id)) await setNotifyOnDone(notifyOnDoneIds);
     }
@@ -198,14 +183,7 @@ chrome.downloads.onErased.addListener(async (id) => {
   broadcast();
 });
 
-// Draw attention on the Chrome taskbar button for the user's last-focused window when a download
-// completes, if the user opted in via either the per-download "Notify when done" toggle or the
-// per-extension "Always notify for files of this type" rule. This is our adaptation of Chromium's
-// legacy auto-open behavior -- the MV3 user-gesture gate makes a true auto-open impossible from a SW
-// callback, so we settle for an attention signal instead. chrome.windows.update({drawAttention:true})
-// maps to Win32 FlashWindowEx; it's a no-op when the window is already focused.
-// Called from onChanged on the in_progress->complete transition, which Chrome fires exactly once,
-// so no per-id dedup set is needed.
+// Called from onChanged on the in_progress->complete transition, so no per-id dedupe is needed.
 async function maybeDrawAttention(id) {
   const notifyOnDoneIds = await getNotifyOnDone();
   let trigger = notifyOnDoneIds.has(id);
@@ -213,7 +191,7 @@ async function maybeDrawAttention(id) {
     const [download] = await chrome.downloads.search({ id });
     if (download) {
       const basename = (download.filename || '').split(/[\\/]/).pop();
-      const ext = getExt(basename);
+      const ext = extFromFilename(basename);
       const alwaysNotifyExts = await getAlwaysNotifyExts();
       if (ext && alwaysNotifyExts.has(ext)) trigger = true;
     }
@@ -277,7 +255,8 @@ const handlers = {
     if (original && original.url) await chrome.downloads.download({ url: original.url });
   },
 
-  openDownloadsPage: () => chrome.tabs.create({ url: 'chrome://downloads' }),
+  openDownloadsPage:   () => chrome.tabs.create({ url: 'chrome://downloads' }),
+  openDownloadsFolder: () => chrome.downloads.showDefaultFolder(),
 
   markFlashed: async ({ id }) => {
     const flashed = await getFlashed();
@@ -304,7 +283,7 @@ const handlers = {
   // the currently-in-progress chip if the toggle was flipped while it's still transferring --
   // maybeDrawAttention() consults the live set at completion time.
   setAlwaysNotifyExt: async ({ ext, enabled }) => {
-    ext = normalizeExt(ext);
+    ext = extFromInput(ext);
     if (!ext) return;
     const alwaysNotifyExts = await getAlwaysNotifyExts();
     const isOn = alwaysNotifyExts.has(ext);

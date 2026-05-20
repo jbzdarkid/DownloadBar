@@ -1,12 +1,5 @@
 // DownloadBar -- chip dropdown menu builder.
 // Menu shape adapted from the Chrome 113 reference capture (see docs/SHELF_BEHAVIOR.md).
-//
-// Legacy Chrome offered two "auto-open" toggles here: "Open when done" (per-download) and
-// "Always open files of this type" (per-extension, persistent). MV3 forbids the SW from calling
-// chrome.downloads.open() without a user gesture, so we cannot literally restore those. We instead
-// expose notify-equivalents -- "Notify when done" and "Always notify for files of this type" --
-// which flash the Chrome taskbar button on completion via chrome.windows.update({drawAttention:true}).
-// See DESIGN.md "Notify-on-complete" for the full rationale.
 
 (function () {
   const NS = (window.__DB = window.__DB || {});
@@ -69,7 +62,9 @@
 
     } else if (item.state === 'complete') {
       if (item.exists !== false) {
-        add('Open', () => actions('open', item.id));
+        if (NS.caps.canOpenFiles) {
+          add('Open', () => actions('open', item.id));
+        }
         if (item.ext) {
           add('Always notify for files of this type', toggleAlways, { checked: item.alwaysNotifyExt });
         }

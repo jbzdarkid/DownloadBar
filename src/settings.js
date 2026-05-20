@@ -40,9 +40,23 @@ const COMPOUND_EXTS = Object.freeze(new Set([
   'd.ts',
 ]));
 
-function normalizeExt(input) {
-  // Accept either a known compound (".tar.gz") or a single ext token.
-  // Allows a leading dot since ".pdf" is a natural thing to type.
+// Two paths to the same token shape:
+// - extFromFilename extracts the ext from a downloaded file's basename
+// - extFromInput validates user-typed input from the options page.
+// Both return a lowercase compound (tar.gz), a single segment (pdf), or '' if no usable ext is present.
+// They intentionally diverge on multi-dot inputs, which are only valid for filenames.
+// extFromFilename('something.foo.bar') == 'bar', extFromInput('something.foo.bar') == ''
+function extFromFilename(filename) {
+  const lower = (filename || '').toLowerCase();
+  for (const compound of COMPOUND_EXTS) {
+    if (lower.endsWith('.' + compound)) return compound;
+  }
+  const m = lower.match(/\.([a-z0-9_+-]+)$/);
+  return m ? m[1] : '';
+}
+
+function extFromInput(input) {
+  // Allows a leading dot since '.pdf' is a natural thing to type.
   const m = (input || '').trim().toLowerCase().match(/^\.?([.a-z0-9_+-]+)$/);
   if (!m) return '';
   const cleaned = m[1];

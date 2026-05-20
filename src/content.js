@@ -1,6 +1,6 @@
 // DownloadBar -- content script.
-// Injects a fixed-position bar into the page using a closed Shadow DOM so page CSS cannot affect it
-// (and vice versa). Subscribes to the SW via a long-lived port; renders state, never polls.
+// Injects a fixed-position bar into the page using a closed Shadow DOM so page CSS cannot affect it (and vice versa).
+// Subscribes to the SW via a long-lived port; renders state, never polls.
 
 (function () {
   if (window.__downloadbar_installed) return;

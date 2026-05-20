@@ -1,5 +1,4 @@
 // DownloadBar -- inline SVG primitives.
-// Centralizes the small handful of SVG builders the chip + menu paint.
 // All icons are based on Chromium 113 source -- originals are in reference/chromium-113-vector-icons/
 
 (function () {

@@ -1,6 +1,5 @@
-// DownloadBar -- formatting and status classification.
-// Pure functions: no DOM, no Chrome API. Verified frame-by-frame against a
-// Chrome 113 reference recording (see docs/SHELF_BEHAVIOR.md):
+// DownloadBar -- formatting and status classification. These are pure functions: no DOM, no Chrome APIs.
+// Verified frame-by-frame against a Chrome 113 reference recording (see docs/SHELF_BEHAVIOR.md):
 //
 //   in progress : `0.5/10.0 MB, 5 mins left`      (single unit, no spaces around `/`)
 //   no ETA      : `0.5/10.0 MB`                   (in_progress, estimatedEndTime missing/past)
@@ -13,8 +12,6 @@
 //   failed bare : `Failed`                        (interrupted with no error field)
 //   removed     : `Removed`                       (complete but file no longer on disk)
 //   complete    : (empty -- renderer drops the status row entirely)
-//
-// progressState() additionally classifies `indeterminate` (in_progress, totalBytes unknown).
 
 (function () {
   const NS = (window.__DB = window.__DB || {});

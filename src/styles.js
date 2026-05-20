@@ -1,8 +1,6 @@
 // DownloadBar -- shadow-root stylesheet.
-// Kept as a JS template literal (not a .css file) because content scripts can't synchronously load CSS into
-// a closed shadow root: content_scripts.css applies to the page document, not our shadow, and fetch() is async.
-// All visual constants here have been verified pixel-perfect against the Chrome 113 reference build
-// (see docs/SHELF_BEHAVIOR.md).
+// Kept as a JS template literal because content scripts can't synchronously load CSS into a closed shadow root.
+// All visual constants here have been verified pixel-perfect against the Chrome 113 (see docs/SHELF_BEHAVIOR.md).
 
 (function () {
   const NS = (window.__DB = window.__DB || {});
@@ -174,14 +172,13 @@
       white-space: nowrap;
     }
 
-    /* Status line under the filename: "123 MB / 456 MB, 30 secs left", error text, etc. */
+    /* Status line under the filename: "123 MB / 456 MB, 30 secs left", "Failed - ...", "Canceled", etc. */
     .db-status {
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
       font-size: 12px;
       color: light-dark(#5f6368, #9aa0a6);
       margin-top: 1px;
     }
-    .db-status--error { color: light-dark(#d93025, #f28b82); }
 
     /* Caret button: the small down-chevron on the right edge of a chip that opens the pop-up menu. */
     .db-caret {
