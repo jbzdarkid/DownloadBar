@@ -2,8 +2,9 @@
 
 A small MV3 extension that restores a Chrome-style download shelf across the bottom of every page. No build step, no framework, no dependencies.
 
-Chrome/Edge: <link pending>
-Firefox: <link pending>
+Chrome/Edge: https://chromewebstore.google.com/detail/downloadbar/idiafamnhiaagbjaboimogfnedchpfjo
+
+Firefox: https://addons.mozilla.org/en-US/firefox/addon/downloadbar_/
 
 ## Goals
 
