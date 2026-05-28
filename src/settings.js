@@ -4,7 +4,7 @@
 
 // Keys which are owned by the service worker (SW).
 // These must always be written via persistedSet() to avoid cache inconsistencies.
-const SW_CACHED_STORAGE_KEYS = new Set(['visibleIds', 'flashedIds', 'notifyOnDoneIds', 'alwaysNotifyExts']);
+const SW_CACHED_STORAGE_KEYS = new Set(['visibleIds', 'flashedIds', 'enteredIds', 'notifyOnDoneIds', 'alwaysNotifyExts']);
 
 async function writeStorage(area, key, value) {
   if (SW_CACHED_STORAGE_KEYS.has(key)) {

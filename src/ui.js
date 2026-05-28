@@ -11,7 +11,6 @@
 
   let _chipList = null;
   let _sendAction = null;
-  const _seenDownloadIds = new Set();
   const _flashStartedAt = new Map();
 
   // Split a filename so the extension stays visible while CSS ellipsizes only the basename.
@@ -31,7 +30,8 @@
     root.appendChild(el('div',
       {
         class: 'db-bar',
-        onclick: () => closeAnyMenu(root) // Close any open menu when clicking elsewhere in the bar.
+        onclick: () => closeAnyMenu(root), // Close any open menu when clicking elsewhere in the bar.
+        oncontextmenu: (e) => e.preventDefault() // Suppress the existing context menu
       },
       _chipList,
       el('div', { class: 'db-tail' },
@@ -58,11 +58,14 @@
     // Events that originate inside the closed shadow get retargeted to the host as they bubble out,
     // so we can detect "outside" by checking whether the composed target equals our host.
     // Caret/menu-button clicks call stopPropagation, so they never reach this listener.
+    // contextmenu is wired up the same way so right-clicking outside the bar also dismisses.
     const hostEl = root.host;
     if (hostEl && hostEl.ownerDocument) {
-      hostEl.ownerDocument.addEventListener('click', (e) => {
+      const dismissOnOutsideClick = (e) => {
         if (e.target !== hostEl) closeAnyMenu(root);
-      }, true);
+      };
+      hostEl.ownerDocument.addEventListener('click', dismissOnOutsideClick, true);
+      hostEl.ownerDocument.addEventListener('contextmenu', dismissOnOutsideClick, true);
     }
 
     _sendAction = actions;
@@ -78,28 +81,22 @@
     const visibleItems = state.items.slice(0, 15);
 
     if (!state.items.length) {
-      // Clean up when we clear out the downloads list, in case chrome starts re-using download IDs.
-      _seenDownloadIds.clear();
       _flashStartedAt.clear();
       return;
     }
 
-    const nextSeen = new Set();
     const liveIds = new Set();
 
     for (const item of visibleItems) {
-      nextSeen.add(item.id);
       liveIds.add(item.id);
-      _chipList.append(renderChip(item, root, state.flashedIds));
+      _chipList.append(renderChip(item, root, state.flashedIds, state.enteredIds));
     }
 
-    // Commit next state and prune flashed IDs that are no longer present.
-    _seenDownloadIds.clear();
-    for (const id of nextSeen) _seenDownloadIds.add(id);
+    // Prune flash-start timestamps for chips that are no longer present.
     for (const id of [..._flashStartedAt.keys()]) if (!liveIds.has(id)) _flashStartedAt.delete(id);
   }
 
-  function renderChip(item, root, flashedIds) {
+  function renderChip(item, root, flashedIds, enteredIds) {
     const isComplete = item.state === 'complete' && item.exists !== false;
 
     // Completion flash, deduped across two layers:
@@ -108,7 +105,8 @@
     //   2. flashedIds -- SW-tracked, persisted in session storage, so the flash doesn't re-fire in
     //      another tab or after an SW restart. We ack each new flash via _sendAction('markFlashed', id).
     const currState = progressState(item);
-    const isNewChip = !_seenDownloadIds.has(item.id);
+    const isNewChip = !enteredIds.includes(item.id);
+    if (isNewChip) _sendAction('markEntered', item.id);
     const swFlashed = flashedIds && flashedIds.includes(item.id);
     if (isComplete && !_flashStartedAt.has(item.id) && !swFlashed) {
       _flashStartedAt.set(item.id, Date.now());
@@ -149,18 +147,20 @@
 
     let card; // forward-declared so caret handler can find its menu host.
 
+    function toggleCaretMenu(e) {
+      e.stopPropagation();
+      e.preventDefault();
+      const existing = card.querySelector('.db-menu');
+      closeAnyMenu(root);
+      if (!existing) {
+        card.append(buildMenu(item, _sendAction, root));
+        caret.classList.add('db-caret--open');
+      }
+    }
     const caret = el('button', {
       class: 'db-caret', title: 'More actions',
-      onclick: (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        const existing = card.querySelector('.db-menu');
-        closeAnyMenu(root);
-        if (!existing) {
-          card.append(buildMenu(item, _sendAction, root));
-          caret.classList.add('db-caret--open');
-        }
-      }
+      onclick: toggleCaretMenu,
+      oncontextmenu: toggleCaretMenu
     },
       caretIconSvg()
     );
@@ -188,7 +188,20 @@
         clickable: onChipClick ? '1' : '0'
       },
       title: item.filename || item.basename,
-      onclick: onChipClick
+      onclick: onChipClick,
+      // If you right click anywhere else on the card, it should pop a menu at the cursor (instead of the caret).
+      oncontextmenu: (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        closeAnyMenu(root);
+        const menu = buildMenu(item, _sendAction, root);
+        menu.style.position = 'fixed';
+        menu.style.right = 'auto';
+        menu.style.top = 'auto';
+        menu.style.left = `${e.clientX}px`;
+        menu.style.bottom = `${window.innerHeight - e.clientY}px`;
+        root.appendChild(menu); // Append to the shadow root so we don't clip at the chip boundary.
+      }
     });
 
     card.append(iconWrap, text, caret);

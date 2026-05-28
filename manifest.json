@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DownloadBar",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Brings back the download bar across the bottom of every page, like Chrome used to have.",
   "homepage_url": "https://github.com/jbzdarkid/DownloadBar",
   "permissions": [

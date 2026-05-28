@@ -7,6 +7,7 @@ if (typeof importScripts === 'function') importScripts('./settings.js');
 
 const VISIBLE_KEY = 'visibleIds';
 const FLASHED_KEY = 'flashedIds';
+const ENTERED_KEY = 'enteredIds';
 // Session-scoped: ids the user toggled "Notify when done" on, awaiting completion.
 const NOTIFY_ON_DONE_KEY = 'notifyOnDoneIds';
 // Persistent: lowercased file extensions opted into "Always notify for files of this type".
@@ -39,6 +40,7 @@ function persistedSet(key, persist = false) {
 
 const [getVisible, setVisible] = persistedSet(VISIBLE_KEY);
 const [getFlashed, setFlashed] = persistedSet(FLASHED_KEY);
+const [getEntered, setEntered] = persistedSet(ENTERED_KEY);
 const [getNotifyOnDone, setNotifyOnDone] = persistedSet(NOTIFY_ON_DONE_KEY);
 const [getAlwaysNotifyExts, setAlwaysNotifyExts] = persistedSet(ALWAYS_NOTIFY_EXTS_KEY, /*persist=*/true);
 
@@ -131,7 +133,8 @@ async function getState() {
   }
 
   const flashedIds = [...await getFlashed()];
-  return { items, flashedIds };
+  const enteredIds = [...await getEntered()];
+  return { items, flashedIds, enteredIds };
 }
 
 async function broadcast() {
@@ -152,34 +155,26 @@ async function broadcast() {
   return state;
 }
 
+// chrome.storage.session is not always cleared by the browser on shutdown, so we reset on first load.
+chrome.runtime.onStartup.addListener(async () => {
+  await setVisible(new Set());
+  await setFlashed(new Set());
+  await setEntered(new Set());
+  await setNotifyOnDone(new Set());
+  broadcast();
+});
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'downloadbar') return;
+  _ports.add(port);
+  port.onDisconnect.addListener(() => _ports.delete(port));
+  broadcast();
+});
+
 chrome.downloads.onCreated.addListener(async (item) => {
   const visible = await getVisible();
   visible.add(item.id);
   await setVisible(visible);
-  broadcast();
-});
-
-chrome.downloads.onChanged.addListener(async (delta) => {
-  if (delta.state) {
-    if (delta.state.current === 'complete') {
-      await maybeDrawAttention(delta.id);
-    } else if (delta.state.current === 'interrupted') {
-      // The download won't complete, so any pending "Notify when done" flag is dead -- drop it.
-      const notifyOnDoneIds = await getNotifyOnDone();
-      if (notifyOnDoneIds.delete(delta.id)) await setNotifyOnDone(notifyOnDoneIds);
-    }
-  }
-  broadcast();
-});
-
-chrome.downloads.onErased.addListener(async (id) => {
-  _iconCache.delete(id);
-  const visible = await getVisible();
-  if (visible.delete(id)) await setVisible(visible);
-  const flashed = await getFlashed();
-  if (flashed.delete(id)) await setFlashed(flashed);
-  const notifyOnDoneIds = await getNotifyOnDone();
-  if (notifyOnDoneIds.delete(id)) await setNotifyOnDone(notifyOnDoneIds);
   broadcast();
 });
 
@@ -206,15 +201,30 @@ async function maybeDrawAttention(id) {
   } catch { /* no window available, or it closed between the two calls */ }
 }
 
-broadcast();
+chrome.downloads.onChanged.addListener(async (delta) => {
+  if (delta.state) {
+    if (delta.state.current === 'complete') {
+      await maybeDrawAttention(delta.id);
+    } else if (delta.state.current === 'interrupted') {
+      // The download won't complete, so any pending "Notify when done" flag is dead -- drop it.
+      const notifyOnDoneIds = await getNotifyOnDone();
+      if (notifyOnDoneIds.delete(delta.id)) await setNotifyOnDone(notifyOnDoneIds);
+    }
+  }
+  broadcast();
+});
 
-chrome.runtime.onConnect.addListener((port) => {
-  if (port.name !== 'downloadbar') return;
-  _ports.add(port);
-  port.onDisconnect.addListener(() => _ports.delete(port));
-  getState().then(state => {
-    try { port.postMessage(state); } catch { /* closed */ }
-  });
+chrome.downloads.onErased.addListener(async (id) => {
+  _iconCache.delete(id);
+  const visible = await getVisible();
+  if (visible.delete(id)) await setVisible(visible);
+  const flashed = await getFlashed();
+  if (flashed.delete(id)) await setFlashed(flashed);
+  const entered = await getEntered();
+  if (entered.delete(id)) await setEntered(entered);
+  const notifyOnDoneIds = await getNotifyOnDone();
+  if (notifyOnDoneIds.delete(id)) await setNotifyOnDone(notifyOnDoneIds);
+  broadcast();
 });
 
 const handlers = {
@@ -263,6 +273,13 @@ const handlers = {
     if (flashed.has(id)) return;
     flashed.add(id);
     await setFlashed(flashed);
+  },
+
+  markEntered: async ({ id }) => {
+    const entered = await getEntered();
+    if (entered.has(id)) return;
+    entered.add(id);
+    await setEntered(entered);
   },
 
   // Per-download "Notify when done" toggle. One-shot: cleared automatically when the download
