@@ -12,8 +12,10 @@
 
   let _chipList = null;
   let _root = null;
-  // List of known downloads ("chips"). Persisted so we can avoid excessive repainting.
-  let _chips = new Map();
+  // Live download chips keyed by download id, mirroring the DOM under _chipList.
+  // Keeping per-chip identity across messages lets us swap one chip's subtree without
+  // disturbing other chips' CSS animations.
+  const _chips = new Map();
 
   // Root function which closes every open menu. This is passed around as a callback.
   function closeAllMenus() {
@@ -76,12 +78,13 @@
   function snapshot(root, { items, flashedIds, enteredIds }) {
     if (!_chipList) return;
     // Cold-start path: wipe and rebuild. No CSS animations to preserve, since this is the
-    // first state this tab is seeing. Insert in reverse so insertBefore(firstChild) gives the
-    // newest-first DOM order the snapshot already arrives in.
+    // first state this tab is seeing.
     for (const chip of _chips.values()) chip.dispose();
     _chips.clear();
     _chipList.replaceChildren();
-    for (const item of items.slice(0, 15).slice().reverse()) {
+    // Insert in reverse so insertBefore(firstChild) inside created() yields the newest-first
+    // DOM order the snapshot already arrives in.
+    for (const item of items.slice(0, 15).reverse()) {
       created(root, { item, flashedIds, enteredIds });
     }
   }

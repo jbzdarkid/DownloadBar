@@ -71,8 +71,6 @@
         status ? el('div', { class: 'db-status' }, status) : null
       );
 
-      let card; // forward-declared so handlers below can reference it.
-
       const toggleCaretMenu = (e) => {
         e.stopPropagation();
         e.preventDefault();
@@ -114,7 +112,7 @@
         };
       }
 
-      card = el('div', {
+      this.el = el('div', {
         class: 'db-item' + (shouldSlideIn ? ' db-item--enter' : ''),
         dataset: {
           clickable: onChipClick ? '1' : '0'
@@ -134,10 +132,7 @@
           });
           this.cursorMenuOpen = true;
         }
-      });
-
-      card.append(iconWrap, text, caret);
-      this.el = card;
+      }, iconWrap, text, caret);
     }
 
     get caretMenuOpen() {
