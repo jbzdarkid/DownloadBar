@@ -34,6 +34,7 @@
         "src/svg.js",
         "src/format.js",
         "src/menu.js",
+        "src/chip.js",
         "src/ui.js",
         "src/content.js"
       ],

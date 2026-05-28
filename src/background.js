@@ -76,13 +76,16 @@ async function fetchIcon(id) {
   }
 }
 
-// Project Chrome's DownloadItem into the trimmed, normalized shape the renderer consumes.
-// notifyOnDoneIds and alwaysNotifyExts are passed in so the menu can render checkmark state without
-// each chip making its own async lookup; getState() hydrates them once and threads them through.
-function serialize(download, notifyOnDoneIds, alwaysNotifyExts) {
+// Project a chrome.downloads DownloadItem (looked up by id) into the wire shape the renderer
+// consumes. Returns null if the download no longer exists. Attaches a cached icon if we have
+// one, otherwise kicks off a fetch and dispatches a follow-up 'changed' when it lands.
+async function serialize(id) {
+  const [download] = await chrome.downloads.search({ id });
+  if (!download) return null;
+  const notifyOnDoneIds = await getNotifyOnDone();
   const basename = (download.filename || '').split(/[\\/]/).pop();
   const ext = extFromFilename(basename);
-  return {
+  const item = {
     id: download.id,
     filename: download.filename || '',
     basename,
@@ -97,62 +100,87 @@ function serialize(download, notifyOnDoneIds, alwaysNotifyExts) {
     estimatedEndTime: download.estimatedEndTime,
     exists: download.exists !== false,
     notifyWhenDone: notifyOnDoneIds.has(download.id),
-    alwaysNotifyExt: ext ? alwaysNotifyExts.has(ext) : false
   };
+  // Firefox reports a paused download as state=interrupted + error=USER_CANCELED + canResume.
+  // Normalize to Chrome's shape so consumers see the same `{state: 'in_progress', paused: true}`
+  // regardless of browser.
+  if (item.state === 'interrupted' && item.error === 'USER_CANCELED' && item.canResume) {
+    item.state = 'in_progress';
+    item.paused = true;
+    item.error = undefined;
+  }
+  const cached = _iconCache.get(item.id);
+  if (cached) item.iconUrl = cached;
+  else fetchIcon(item.id).then(url => { if (url) dispatchChanged(item.id); });
+  return item;
 }
 
-async function getState() {
+async function getSnapshot() {
   const visible = await getVisible();
-  const notifyOnDoneIds = await getNotifyOnDone();
-  const alwaysNotifyExts = await getAlwaysNotifyExts();
+  const items = (await Promise.all([...visible].map(serialize))).filter(Boolean);
 
-  // Resolve each visible id to a download record in parallel; drop ids whose download no longer exists.
-  const lookup = async (id) => {
-    const [download] = await chrome.downloads.search({ id });
-    if (download) return serialize(download, notifyOnDoneIds, alwaysNotifyExts);
-    visible.delete(id);
-    return null;
-  };
+  // Drop any visible ids whose download no longer exists.
+  const found = new Set(items.map(i => i.id));
   const before = visible.size;
-  const items = (await Promise.all(Array.from(visible, lookup))).filter(Boolean);
+  for (const id of [...visible]) if (!found.has(id)) visible.delete(id);
   if (visible.size < before) await setVisible(visible);
 
   // Sort downloaded items by time (implicit by download ID).
   // Note that download IDs are persistent and stable per-profile, too.
   items.sort((a, b) => b.id - a.id);
 
-  // Attach cached icons; kick off fetches for misses and rebroadcast once any resolve.
-  const pending = [];
-  for (const item of items) {
-    const cached = _iconCache.get(item.id);
-    if (cached) item.iconUrl = cached;
-    else pending.push(fetchIcon(item.id));
-  }
-  if (pending.length) {
-    Promise.all(pending).then((urls) => { if (urls.some(Boolean)) broadcast(); });
-  }
-
-  const flashedIds = [...await getFlashed()];
-  const enteredIds = [...await getEntered()];
-  return { items, flashedIds, enteredIds };
+  return {
+    type: 'snapshot',
+    items,
+    flashedIds: [...await getFlashed()],
+    enteredIds: [...await getEntered()],
+  };
 }
 
-async function broadcast() {
-  const state = await getState();
+// Decorate every per-event message with the cross-cutting flash/enter sets the renderer needs.
+async function dispatch(msg) {
+  msg.flashedIds = [...await getFlashed()];
+  msg.enteredIds = [...await getEntered()];
   for (const port of _ports) {
-    try { port.postMessage(state); } catch { /* port closed */ }
+    try { port.postMessage(msg); } catch { /* port closed */ }
   }
-  const wantTicker = state.items.some(item => item.state === 'in_progress' && !item.paused);
+  await reconcileTicker();
+}
+
+async function dispatchChanged(id) {
+  const item = await serialize(id);
+  if (item) await dispatch({ type: 'changed', item });
+}
+
+// The ticker fires per-chip 'changed' messages for in-progress chips so their progress rings
+// and byte counters update. Stops when no chip is actively transferring.
+async function reconcileTicker() {
+  const visible = await getVisible();
+  let wantTicker = false;
+  for (const id of visible) {
+    const [download] = await chrome.downloads.search({ id });
+    if (download && download.state === 'in_progress' && !download.paused) {
+      wantTicker = true;
+      break;
+    }
+  }
   const haveTicker = _tickTimer != null;
   if (wantTicker && !haveTicker) {
-    _tickTimer = setInterval(broadcast, TICK_MS);
+    _tickTimer = setInterval(tick, TICK_MS);
   } else if (!wantTicker && haveTicker) {
     clearInterval(_tickTimer);
     _tickTimer = null;
-  } else {
-    // Do nothing -- what we want is what we have.
   }
-  return state;
+}
+
+async function tick() {
+  const visible = await getVisible();
+  for (const id of visible) {
+    const [download] = await chrome.downloads.search({ id });
+    if (download && download.state === 'in_progress') {
+      await dispatchChanged(id);
+    }
+  }
 }
 
 // chrome.storage.session is not always cleared by the browser on shutdown, so we reset on first load.
@@ -161,21 +189,25 @@ chrome.runtime.onStartup.addListener(async () => {
   await setFlashed(new Set());
   await setEntered(new Set());
   await setNotifyOnDone(new Set());
-  broadcast();
+  // Any connected tabs will be sent a fresh snapshot on next port event; no need to push here.
 });
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== 'downloadbar') return;
   _ports.add(port);
   port.onDisconnect.addListener(() => _ports.delete(port));
-  broadcast();
+  getSnapshot().then(async (msg) => {
+    try { port.postMessage(msg); } catch { /* closed */ }
+    await reconcileTicker();
+  });
 });
 
 chrome.downloads.onCreated.addListener(async (item) => {
   const visible = await getVisible();
   visible.add(item.id);
   await setVisible(visible);
-  broadcast();
+  const serialized = await serialize(item.id);
+  if (serialized) await dispatch({ type: 'created', item: serialized });
 });
 
 // Called from onChanged on the in_progress->complete transition, so no per-id dedupe is needed.
@@ -211,7 +243,7 @@ chrome.downloads.onChanged.addListener(async (delta) => {
       if (notifyOnDoneIds.delete(delta.id)) await setNotifyOnDone(notifyOnDoneIds);
     }
   }
-  broadcast();
+  await dispatchChanged(delta.id);
 });
 
 chrome.downloads.onErased.addListener(async (id) => {
@@ -224,21 +256,25 @@ chrome.downloads.onErased.addListener(async (id) => {
   if (entered.delete(id)) await setEntered(entered);
   const notifyOnDoneIds = await getNotifyOnDone();
   if (notifyOnDoneIds.delete(id)) await setNotifyOnDone(notifyOnDoneIds);
-  broadcast();
+  await dispatch({ type: 'erased', id });
 });
 
 const handlers = {
-  getState: () => getState(),
+  getState: () => getSnapshot(),
 
   dismiss: async ({ id }) => {
     const visible = await getVisible();
-    if (visible.delete(id)) await setVisible(visible);
-    broadcast();
+    if (visible.delete(id)) {
+      await setVisible(visible);
+      await dispatch({ type: 'erased', id });
+    }
   },
 
   dismissAll: async () => {
+    const visible = await getVisible();
+    const ids = [...visible];
     await setVisible(new Set());
-    broadcast();
+    for (const id of ids) await dispatch({ type: 'erased', id });
   },
 
   // Open the file. If the dismissOnOpen setting is on (the default), also drop the chip from the
@@ -251,7 +287,7 @@ const handlers = {
       const visible = await getVisible();
       if (visible.delete(id)) {
         await setVisible(visible);
-        broadcast();
+        await dispatch({ type: 'erased', id });
       }
     }
   },
@@ -292,13 +328,14 @@ const handlers = {
     if (enabled) notifyOnDoneIds.add(id);
     else notifyOnDoneIds.delete(id);
     await setNotifyOnDone(notifyOnDoneIds);
-    broadcast();
+    await dispatchChanged(id);
   },
 
   // Per-extension "Always notify for files of this type" toggle. Persistent across browser
   // restarts (chrome.storage.local). Applies to any future download of that extension, and to
   // the currently-in-progress chip if the toggle was flipped while it's still transferring --
-  // maybeDrawAttention() consults the live set at completion time.
+  // maybeDrawAttention() consults the live set at completion time. The menu's checkmark also
+  // pulls live via isAlwaysNotifyExt (below), so we don't have to push a per-chip refresh.
   setAlwaysNotifyExt: async ({ ext, enabled }) => {
     ext = extFromInput(ext);
     if (!ext) return;
@@ -308,8 +345,11 @@ const handlers = {
     if (enabled) alwaysNotifyExts.add(ext);
     else alwaysNotifyExts.delete(ext);
     await setAlwaysNotifyExts(alwaysNotifyExts);
-    broadcast();
   },
+
+  // Live query for the menu's "Always notify..." checkmark. Cheaper than baking the bool into
+  // every serialized item and refreshing all chips whenever the set changes.
+  isAlwaysNotifyExt: async ({ ext }) => (await getAlwaysNotifyExts()).has(ext),
 
   // Read-only view of the always-notify set, for the options page.
   // Marshalled into an array to cross the SW boundary.

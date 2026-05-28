@@ -184,7 +184,7 @@
     .db-caret {
       all: unset;
       cursor: pointer;
-      width: 22px; height: 28px;
+      width: 36px; height: 36px;
       display: inline-flex; align-items: center; justify-content: center;
       border-radius: 4px;
       color: light-dark(#5f6368, #c4c7c5);
@@ -194,15 +194,14 @@
       background: light-dark(rgba(0,0,0,0.06), rgba(255,255,255,0.10));
       color: inherit;
     }
-    .db-caret svg { width: 10px; height: 10px; }
+    .db-caret svg { width: 16px; height: 16px; }
     .db-caret.db-caret--open svg { transform: rotate(180deg); }
 
-    /* Caret pop-up: the per-chip context menu (Open / Show in folder / Pause / Cancel / Remove ...)
-       that anchors above the caret button and floats over the bar. */
+    /* Caret pop-up: the per-chip context menu (Open / Show in folder / Pause / Cancel / Remove ...).
+       Lives on the shadow root and is anchored via inline left/right/top/bottom written by chip.js,
+       so the rule below only owns appearance, not positioning. */
     .db-menu {
-      position: absolute;
-      bottom: calc(100% + 4px);
-      right: 0;
+      position: fixed;
       min-width: 180px;
       background: light-dark(#ffffff, #2d2e30);
       color: light-dark(#202124, #e8eaed);

@@ -26,6 +26,8 @@ Firefox: https://addons.mozilla.org/en-US/firefox/addon/downloadbar_/
 
 `background.js` is the only piece that talks to the underlying `chrome.downloads` APIs.
 `content.js` runs on every tab, and hands state from the background service worker to the front-end `ui.js`. Some user actions also flow backwards to the background SW.
+`ui.js` owns the bar lifecycle and reconciles `Chip` instances against each broadcast.
+`chip.js` owns one chip's DOM and per-chip event wiring.
 `menu.js` is responsible for the popup menu on each download "chip".
 `settings.js` manages the persistent user settings, and is loaded by the service worker and the options UX.
 All other files should be self-explanatory.
