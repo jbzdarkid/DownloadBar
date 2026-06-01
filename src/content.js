@@ -11,9 +11,6 @@
   let _shadow = null;
   let _port;
 
-  // Renderer calls actions(name, id) to send a message to the SW.
-  const actions = (action, id) => chrome.runtime.sendMessage({ action, id });
-
   function ensureHost() {
     if (_host) return;
     _host = document.createElement('div');
@@ -27,7 +24,7 @@
       'z-index: 2147483647 !important;' +
       'pointer-events: auto !important;';
     _shadow = _host.attachShadow({ mode: 'closed' });
-    DownloadBar.mount(_shadow, actions);
+    DownloadBar.mount(_shadow);
     (document.body || document.documentElement).appendChild(_host);
   }
 
@@ -49,14 +46,36 @@
       setVisible(false);
       return;
     }
-    _port.onMessage.addListener((state) => {
-      if (!state.items.length) {
-        setVisible(false);
-        return;
+    // Local count of visible chips so we can hide the host when it's empty without asking the SW.
+    // snapshot resets it; created/erased adjust by one.
+    let visibleCount = 0;
+    _port.onMessage.addListener((msg) => {
+      // Update visibility counter, then dispatch to the matching renderer handler. Even when
+      // visibleCount drops to zero we still apply the message so the renderer's _chips map
+      // stays in sync for any later messages.
+      switch (msg.type) {
+        case 'snapshot':
+          visibleCount = msg.items.length;
+          if (_shadow) DownloadBar.snapshot(_shadow, msg);
+          break;
+        case 'created':
+          visibleCount++;
+          if (_shadow) DownloadBar.created(_shadow, msg);
+          break;
+        case 'changed':
+          if (_shadow) DownloadBar.changed(_shadow, msg);
+          break;
+        case 'erased':
+          if (visibleCount > 0) visibleCount--;
+          if (_shadow) DownloadBar.erased(_shadow, msg);
+          break;
       }
-      ensureHost();
-      setVisible(true);
-      DownloadBar.render(_shadow, state);
+      if (visibleCount > 0) {
+        ensureHost();
+        setVisible(true);
+      } else {
+        setVisible(false);
+      }
     });
     _port.onDisconnect.addListener(() => {
       // SW recycled or extension reloaded -- reconnect on next interaction.

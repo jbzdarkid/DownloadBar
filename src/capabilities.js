@@ -5,7 +5,8 @@
   const NS = (window.__DB = window.__DB || {});
   if (NS.caps) return;
 
-  const isFirefox = typeof chrome.runtime.getBrowserInfo === 'function';
+  // Firefox serves extension resources from moz-extension://, Chrome from chrome-extension://.
+  const isFirefox = chrome.runtime.getURL('').startsWith('moz-extension://');
 
   if (isFirefox) {
     NS.caps = {

@@ -184,7 +184,7 @@
     .db-caret {
       all: unset;
       cursor: pointer;
-      width: 22px; height: 28px;
+      width: 36px; height: 36px;
       display: inline-flex; align-items: center; justify-content: center;
       border-radius: 4px;
       color: light-dark(#5f6368, #c4c7c5);
@@ -194,15 +194,14 @@
       background: light-dark(rgba(0,0,0,0.06), rgba(255,255,255,0.10));
       color: inherit;
     }
-    .db-caret svg { width: 10px; height: 10px; }
+    .db-caret svg { width: 16px; height: 16px; }
     .db-caret.db-caret--open svg { transform: rotate(180deg); }
 
-    /* Caret pop-up: the per-chip context menu (Open / Show in folder / Pause / Cancel / Remove ...)
-       that anchors above the caret button and floats over the bar. */
+    /* Caret pop-up: the per-chip context menu (Open / Show in folder / Pause / Cancel / Remove ...).
+       Lives on the shadow root and is anchored via inline left/right/top/bottom written by chip.js,
+       so the rule below only owns appearance, not positioning. */
     .db-menu {
-      position: absolute;
-      bottom: calc(100% + 4px);
-      right: 0;
+      position: fixed;
       min-width: 180px;
       background: light-dark(#ffffff, #2d2e30);
       color: light-dark(#202124, #e8eaed);
@@ -253,20 +252,20 @@
          See docs/SHELF_BEHAVIOR.md "Shelf width and chip-hiding thresholds". */
     }
 
-    /* "Show all" in Chrome 113 CfT renders as a MdTextButton with a dark rounded-rect background,
-       not a plain text link. */
+    /* "Show all" in Chrome 113 is a views::MdTextButton with ui::ButtonStyle::kText: no background,
+       text rendered in the prominent/link color. Colors match Chromium's blue link tokens
+       (Google Blue 600 / 300). */
     .db-show-all {
       all: unset;
       cursor: pointer;
-      color: light-dark(#202124, #e8eaed);
+      color: light-dark(#1a73e8, #8ab4f8);
       font-size: 12px;
       font-weight: 500;
-      padding: 6px 12px;
+      padding: 6px 8px;
       line-height: 1;
-      border-radius: 14px;
-      background: light-dark(rgba(0,0,0,0.04), rgba(255,255,255,0.06));
+      border-radius: 4px;
     }
-    .db-show-all:hover { background: light-dark(rgba(0,0,0,0.08), rgba(255,255,255,0.12)); }
+    .db-show-all:hover { background: light-dark(rgba(26,115,232,0.08), rgba(138,180,248,0.10)); }
 
     /* Close X: dismisses the whole bar for the current session (re-shown when a new download starts).
        The X glyph itself is an inline SVG built in ui.js, mirroring Chromium 113's kCloseRoundedIcon. */

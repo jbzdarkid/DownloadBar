@@ -23,10 +23,10 @@ Source tag: `refs/tags/113.0.5672.63`.
 
 The four graphics the extension actually paints today:
 
-- `close_rounded.icon` -> inline SVG in `src/ui.js` (shelf close)
-- `caret_up.icon`      -> inline SVG in `src/ui.js` (chip dropdown; CSS rotates 180deg for the open state, geometrically equivalent to `caret_down.icon`)
-- `menu_check.icon`    -> inline SVG in `src/menu.js` (`menuCheckSvg()`; 16dp rep, fill=currentColor)
-- `PaintDownloadProgress` (custom paint in `download_item_view.cc`, not a `.icon` file) -> `progressRingSvg` in `src/ui.js`
+- `close_rounded.icon` -> `closeIconSvg` in `src/svg.js` (shelf close)
+- `caret_up.icon`      -> `caretIconSvg` in `src/svg.js` (chip dropdown; CSS rotates 180deg for the open state, geometrically equivalent to `caret_down.icon`)
+- `menu_check.icon`    -> `menuCheckSvg` in `src/svg.js` (16dp rep, fill=currentColor)
+- `PaintDownloadProgress` (custom paint in `download_item_view.cc`, not a `.icon` file) -> `progressRingSvg` in `src/svg.js`
 
 The warning / error / info / help icons are cached for completeness but the
 extension never renders them: `chrome.downloads` doesn't surface the dangerous /
