@@ -50,32 +50,31 @@
     // snapshot resets it; created/erased adjust by one.
     let visibleCount = 0;
     _port.onMessage.addListener((msg) => {
+      // Mount the shadow host up front so the renderer always has somewhere to draw. The host
+      // is kept `display: none` until visibleCount > 0, so creating it for tabs that never see
+      // a download costs one hidden <div>.
+      ensureHost();
       // Update visibility counter, then dispatch to the matching renderer handler. Even when
       // visibleCount drops to zero we still apply the message so the renderer's _chips map
       // stays in sync for any later messages.
       switch (msg.type) {
         case 'snapshot':
           visibleCount = msg.items.length;
-          if (_shadow) DownloadBar.snapshot(_shadow, msg);
+          DownloadBar.snapshot(_shadow, msg);
           break;
         case 'created':
           visibleCount++;
-          if (_shadow) DownloadBar.created(_shadow, msg);
+          DownloadBar.created(_shadow, msg);
           break;
         case 'changed':
-          if (_shadow) DownloadBar.changed(_shadow, msg);
+          DownloadBar.changed(_shadow, msg);
           break;
         case 'erased':
           if (visibleCount > 0) visibleCount--;
-          if (_shadow) DownloadBar.erased(_shadow, msg);
+          DownloadBar.erased(_shadow, msg);
           break;
       }
-      if (visibleCount > 0) {
-        ensureHost();
-        setVisible(true);
-      } else {
-        setVisible(false);
-      }
+      setVisible(visibleCount > 0);
     });
     _port.onDisconnect.addListener(() => {
       // SW recycled or extension reloaded -- reconnect on next interaction.
